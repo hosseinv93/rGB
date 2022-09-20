@@ -20,4 +20,4 @@ To use this potential in your simulation, use `pair_style rgayberne gamma upsilo
 
 If you have used this plugin, please use the following citations:
 
-Name of paper and citation [link to paper](https://github.com/hosseinv93/rGB).
+Name of paper and citation [link to paper when we know](https://github.com/hosseinv93/rGB).
