@@ -15,3 +15,8 @@ First, set up ASPHERE package for inclusion using `make yes-ASPHERE` command. Th
 
 # Usage instructions
 To use this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`. `gamma`, `upsilon`, `mu` are re the same as the explained one in LAMMPS manual. `cutoff` is automatically set to the position of the original Gay-berne potential minimum and. To satisfy LAMMPS, assig a large number to `cutoff`. For example, two times of the largest diameter of the ellipsoids. 
+
+# Citing this plugin
+
+If you have used this plugin, please use the following citations:
+Name of paper and citation [link](https://github.com/hosseinv93/rGB).
