@@ -3,7 +3,13 @@ soft repulsive Gay-Berne potential for LAMMPS
 
 # Summary
 
-The rgayberne package allows users to perform LAMMPS MD simulations with soft repuslive Gay-Berne potential, which is obtained by shifting and truncating the original Gay-Berne potential. 
+The rgayberne package allows users to perform LAMMPS MD simulations with soft repuslive Gay-Berne potential, which is obtained by shifting and truncating the original Gay-Berne potential.
+
+# Citing this plugin
+
+If you have used this plugin, please use the following citations:
+
+Name of paper and citation [link to paper when we know](https://github.com/hosseinv93/rGB).
 
 # Dependencies
 
@@ -16,8 +22,4 @@ First, set up ASPHERE package for inclusion using `make yes-ASPHERE` command. Th
 # Usage instructions
 To use this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`. `gamma`, `upsilon`, `mu` are re the same as the explained one in LAMMPS manual. `cutoff` is automatically set to the position of the original Gay-Berne potential minimum. To satisfy LAMMPS, assign a large number to `cutoff`. For example, two times of the major diameter of the ellipsoids. 
 
-# Citing this plugin
 
-If you have used this plugin, please use the following citations:
-
-Name of paper and citation [link to paper when we know](https://github.com/hosseinv93/rGB).
