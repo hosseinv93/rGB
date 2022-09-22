@@ -20,6 +20,6 @@ This package is only guaranteed to work for the 3Mar2020 stable version of LAMMP
 First, set up ASPHERE package for inclusion using `make yes-ASPHERE` command. This package consists the potential file for original Gay-Berne potential. Then, copy-paste `pair_rgayberne.cpp` and `pair_rgayberne.h` into the LAMMPS `src` directory. Filnaly, compile LAMMPS using the legacy Make procedure `make machine-name`, e.g., `make mpi`. 
 
 # Usage instructions
-To use this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`. `gamma`, `upsilon`, and `mu` are the same as the explained ones in the LAMMPS manual. `cutoff` is automatically set to the position of the original Gay-Berne potential minimum. To satisfy LAMMPS, assign a large number to `cutoff`. For example, two times of the major diameter of the ellipsoids since it doesn't affect the calculations. 
+To use this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`. `gamma`, `upsilon`, and `mu` are the same as the explained ones in the LAMMPS manual. `cutoff` is automatically set to the position of the original Gay-Berne potential minimum. To satisfy LAMMPS, assign a large number to `cutoff` since it doesn't affect the calculations. For example, use two times of the major diameter of the ellipsoids. 
 
 
