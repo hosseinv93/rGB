@@ -1,4 +1,4 @@
-# rGB
+# rGB plugin for LAMMPS
 soft repulsive Gay-Berne potential for LAMMPS
 
 # Summary
