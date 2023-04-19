@@ -18,9 +18,11 @@ This package is only guaranteed to work for the 3Mar2020 stable version of LAMMP
 
 # Installation instructions
 
-To employ this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`, where`gamma`, `upsilon`, and `mu` are the same variables as in the original Gay-Berne potential (see LAMMPS manual). The cutoff value of the potential is automatically set to the position of the original Gay-Berne potential minimum by the plugin, however, LAMMPS requires the assignment of a value to `cutoff`. We suggest setting this value larger than the the major diameter of the particles. Note that this action does not affect the computational efficiency, computational accuracy nor the equations of motion within the simulations.
+- When building LAMMPS (https://docs.lammps.org), set up the ASPHERE package for inclusion using `make yes-ASPHERE`. This package contains the script of the original Gay-Berne potential. 
+- Add `pair_rgayberne.cpp` and `pair_rgayberne.h` into the LAMMPS `src` directory. 
+- Build LAMMPS. 
 
 # Usage instructions
-To use this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`. `gamma`, `upsilon`, and `mu` are the same as the explained ones in the LAMMPS manual. `cutoff` is automatically set to the position of the original Gay-Berne potential minimum. To satisfy LAMMPS, assign a large number to `cutoff` since it doesn't affect the calculations. For example, use two times of the major diameter of the ellipsoids. 
 
+To employ this potential in your simulation, use `pair_style rgayberne gamma upsilon mu cutoff`, where`gamma`, `upsilon`, and `mu` are the same variables as in the original Gay-Berne potential (see LAMMPS manual). The cutoff value of the potential is automatically set to the position of the original Gay-Berne potential minimum by the plugin, however, LAMMPS requires the assignment of a value to `cutoff`. We suggest setting this value larger than the the major diameter of the particles. Note that this action does not affect the computational efficiency, computational accuracy nor the equations of motion within the simulations.
 
