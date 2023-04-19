@@ -19,6 +19,7 @@ This package is only guaranteed to work for the 3Mar2020 stable version of LAMMP
 # Installation instructions
 
 - When building LAMMPS (https://docs.lammps.org), set up the ASPHERE package for inclusion using `make yes-ASPHERE`. This package contains the script of the original Gay-Berne potential. 
+- Remove `pair_gayberne.cpp` and `pair_gayberne.h` from the LAMMPS `src` directory. 
 - Add `pair_rgayberne.cpp` and `pair_rgayberne.h` into the LAMMPS `src` directory. 
 - Build LAMMPS. 
 
