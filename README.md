@@ -7,11 +7,10 @@ The rgayberne package allows users to perform LAMMPS molecular dynamics (MD) sim
 
 # Citing this plugin
 
-If you have used this plugin, please use the following citations:
+When using this plugin, please cite:
 
-Interactions between polyelectrolytes mediated by ordering and orientation of multivalent non-spherical ions in salt solutions [ 	
-https://doi.org/10.48550/arXiv.2210.03492]( 	
-https://doi.org/10.48550/arXiv.2210.03492).
+Hossein Vahid, Alberto Scacchi, Maria Sammalkorpi, and Tapio Ala-Nissila "Interactions between rigid polyelectrolytes mediated by ordering and orientation of multivalent non-spherical ions in salt solutions", 
+Physical Review Letters (2023). https://doi.org/10.1103/PhysRevLett.130.158202 . (https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.130.158202)
 
 # Dependencies
 
