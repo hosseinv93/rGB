@@ -45,7 +45,7 @@ If you use this plugin, please cite:
    make yes-ASPHERE
    ```
 
-2. Copy the plugin files into the LAMMPS `src` directory:
+2. Copy the plugin files into the LAMMPS `src/ASPHERE` directory:
 
    ```text
    pair_gayberne_wca.cpp
