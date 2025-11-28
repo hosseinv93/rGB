@@ -3,31 +3,28 @@
    http://lammps.sandia.gov, Sandia National Laboratories
    Steve Plimpton, sjplimp@sandia.gov
 
-   Copyright (2003) Sandia Corporation.  Under the terms of Contract
-   DE-AC04-94AL85000 with Sandia Corporation, the U.S. Government retains
-   certain rights in this software.  This software is distributed under
-   the GNU General Public License.
+   Repulsive (WCA-like) Gay-Berne potential.
+   Based on the standard LAMMPS Gay-Berne implementation.
 
-   See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
 #ifdef PAIR_CLASS
 
-PairStyle(rgayberne,PairGayBerne)
+PairStyle(gayberne/wca,PairGayBerneWCA)
 
 #else
 
-#ifndef LMP_PAIR_GAYBERNE_H
-#define LMP_PAIR_GAYBERNE_H
+#ifndef LMP_PAIR_GAYBERNE_WCA_H
+#define LMP_PAIR_GAYBERNE_WCA_H
 
 #include "pair.h"
 
 namespace LAMMPS_NS {
 
-class PairGayBerne : public Pair {
+class PairGayBerneWCA : public Pair {
  public:
-  PairGayBerne(LAMMPS *lmp);
-  virtual ~PairGayBerne();
+  PairGayBerneWCA(LAMMPS *lmp);
+  virtual ~PairGayBerneWCA();
   virtual void compute(int, int);
   virtual void settings(int, char **);
   void coeff(int, char **);
@@ -73,6 +70,7 @@ class PairGayBerne : public Pair {
 };
 
 }
+
 #endif
 #endif
 
@@ -88,21 +86,20 @@ E: Incorrect args for pair coefficients
 
 Self-explanatory.  Check the input script or data file.
 
-E: Pair gayberne requires atom style ellipsoid
+E: Pair gayberne/wca requires atom style ellipsoid
 
 Self-explanatory.
 
-E: Pair gayberne requires atoms with same type have same shape
+E: Pair gayberne/wca requires atoms with same type have same shape
 
 Self-explanatory.
 
-E: Pair gayberne epsilon a,b,c coeffs are not all set
+E: Pair gayberne/wca epsilon a,b,c coeffs are not all set
 
-Each atom type involved in pair_style gayberne must
+Each atom type involved in pair_style gayberne/wca must
 have these 3 coefficients set at least once.
 
 E: Bad matrix inversion in mldivide3
 
 This error should not occur unless the matrix is badly formed.
 
-*/
