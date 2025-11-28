@@ -3,19 +3,13 @@
    http://lammps.sandia.gov, Sandia National Laboratories
    Steve Plimpton, sjplimp@sandia.gov
 
-   Copyright (2003) Sandia Corporation.  Under the terms of Contract
-   DE-AC04-94AL85000 with Sandia Corporation, the U.S. Government retains
-   certain rights in this software.  This software is distributed under
-   the GNU General Public License.
+   Repulsive (WCA-like) Gay-Berne potential based on pair_gayberne.
 
-   See the README file in the top-level LAMMPS directory.
+   Contributing author for original GB: Mike Brown (SNL)
 ------------------------------------------------------------------------- */
 
-/* ----------------------------------------------------------------------
-   Contributing author: Mike Brown (SNL)
-------------------------------------------------------------------------- */
+#include "pair_gayberne_wca.h"
 
-#include "pair_rgayberne.h"
 #include <mpi.h>
 #include <cmath>
 #include "math_extra.h"
@@ -32,8 +26,13 @@
 
 using namespace LAMMPS_NS;
 
-static const char cite_pair_gayberne[] =
-  "pair gayberne command:\n\n"
+// precompute 2^(1/6) once
+namespace {
+  const double TWO_1_6 = std::pow(2.0,1.0/6.0);
+}
+
+static const char cite_pair_gayberne_wca[] =
+  "pair gayberne/wca command:\n\n"
   "@Article{Brown09,\n"
   " author =  {W. M. Brown, M. K. Petersen, S. J. Plimpton, and G. S. Grest},\n"
   " title =   {Liquid crystal nanodroplets in solution},\n"
@@ -45,9 +44,9 @@ static const char cite_pair_gayberne[] =
 
 /* ---------------------------------------------------------------------- */
 
-PairGayBerne::PairGayBerne(LAMMPS *lmp) : Pair(lmp)
+PairGayBerneWCA::PairGayBerneWCA(LAMMPS *lmp) : Pair(lmp)
 {
-  if (lmp->citeme) lmp->citeme->add(cite_pair_gayberne);
+  if (lmp->citeme) lmp->citeme->add(cite_pair_gayberne_wca);
 
   single_enable = 0;
   writedata = 1;
@@ -57,7 +56,7 @@ PairGayBerne::PairGayBerne(LAMMPS *lmp) : Pair(lmp)
    free all arrays
 ------------------------------------------------------------------------- */
 
-PairGayBerne::~PairGayBerne()
+PairGayBerneWCA::~PairGayBerneWCA()
 {
   if (allocated) {
     memory->destroy(setflag);
@@ -82,7 +81,7 @@ PairGayBerne::~PairGayBerne()
 
 /* ---------------------------------------------------------------------- */
 
-void PairGayBerne::compute(int eflag, int vflag)
+void PairGayBerneWCA::compute(int eflag, int vflag)
 {
   int i,j,ii,jj,inum,jnum,itype,jtype;
   double evdwl,one_eng,rsq,r2inv,r6inv,forcelj,factor_lj;
@@ -230,7 +229,7 @@ void PairGayBerne::compute(int eflag, int vflag)
    allocate all arrays
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::allocate()
+void PairGayBerneWCA::allocate()
 {
   allocated = 1;
   int n = atom->ntypes;
@@ -264,14 +263,14 @@ void PairGayBerne::allocate()
    global settings
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::settings(int narg, char **arg)
+void PairGayBerneWCA::settings(int narg, char **arg)
 {
   if (narg != 4) error->all(FLERR,"Illegal pair_style command");
 
-  gamma = force->numeric(FLERR,arg[0]);
-  upsilon = force->numeric(FLERR,arg[1])/2.0;
-  mu = force->numeric(FLERR,arg[2]);
-  cut_global = force->numeric(FLERR,arg[3]);
+  gamma      = utils::numeric(FLERR,arg[0],false,lmp);
+  upsilon    = utils::numeric(FLERR,arg[1],false,lmp)/2.0;
+  mu         = utils::numeric(FLERR,arg[2],false,lmp);
+  cut_global = utils::numeric(FLERR,arg[3],false,lmp);
 
   // reset cutoffs that have been explicitly set
 
@@ -287,27 +286,27 @@ void PairGayBerne::settings(int narg, char **arg)
    set coeffs for one or more type pairs
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::coeff(int narg, char **arg)
+void PairGayBerneWCA::coeff(int narg, char **arg)
 {
   if (narg < 10 || narg > 11)
     error->all(FLERR,"Incorrect args for pair coefficients");
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
-  force->bounds(FLERR,arg[0],atom->ntypes,ilo,ihi);
-  force->bounds(FLERR,arg[1],atom->ntypes,jlo,jhi);
+  utils::bounds(FLERR,arg[0],1,atom->ntypes,ilo,ihi,error);
+  utils::bounds(FLERR,arg[1],1,atom->ntypes,jlo,jhi,error);
 
-  double epsilon_one = force->numeric(FLERR,arg[2]);
-  double sigma_one = force->numeric(FLERR,arg[3]);
-  double eia_one = force->numeric(FLERR,arg[4]);
-  double eib_one = force->numeric(FLERR,arg[5]);
-  double eic_one = force->numeric(FLERR,arg[6]);
-  double eja_one = force->numeric(FLERR,arg[7]);
-  double ejb_one = force->numeric(FLERR,arg[8]);
-  double ejc_one = force->numeric(FLERR,arg[9]);
+  double epsilon_one = utils::numeric(FLERR,arg[2],false,lmp);
+  double sigma_one   = utils::numeric(FLERR,arg[3],false,lmp);
+  double eia_one     = utils::numeric(FLERR,arg[4],false,lmp);
+  double eib_one     = utils::numeric(FLERR,arg[5],false,lmp);
+  double eic_one     = utils::numeric(FLERR,arg[6],false,lmp);
+  double eja_one     = utils::numeric(FLERR,arg[7],false,lmp);
+  double ejb_one     = utils::numeric(FLERR,arg[8],false,lmp);
+  double ejc_one     = utils::numeric(FLERR,arg[9],false,lmp);
 
   double cut_one = cut_global;
-  if (narg == 11) cut_one = force->numeric(FLERR,arg[10]);
+  if (narg == 11) cut_one = utils::numeric(FLERR,arg[10],false,lmp);
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
@@ -316,16 +315,16 @@ void PairGayBerne::coeff(int narg, char **arg)
       sigma[i][j] = sigma_one;
       cut[i][j] = cut_one;
       if (eia_one != 0.0 || eib_one != 0.0 || eic_one != 0.0) {
-        well[i][0] = pow(eia_one,-1.0/mu);
-        well[i][1] = pow(eib_one,-1.0/mu);
-        well[i][2] = pow(eic_one,-1.0/mu);
+        well[i][0] = std::pow(eia_one,-1.0/mu);
+        well[i][1] = std::pow(eib_one,-1.0/mu);
+        well[i][2] = std::pow(eic_one,-1.0/mu);
         if (eia_one == eib_one && eib_one == eic_one) setwell[i] = 2;
         else setwell[i] = 1;
       }
       if (eja_one != 0.0 || ejb_one != 0.0 || ejc_one != 0.0) {
-        well[j][0] = pow(eja_one,-1.0/mu);
-        well[j][1] = pow(ejb_one,-1.0/mu);
-        well[j][2] = pow(ejc_one,-1.0/mu);
+        well[j][0] = std::pow(eja_one,-1.0/mu);
+        well[j][1] = std::pow(ejb_one,-1.0/mu);
+        well[j][2] = std::pow(ejc_one,-1.0/mu);
         if (eja_one == ejb_one && ejb_one == ejc_one) setwell[j] = 2;
         else setwell[j] = 1;
       }
@@ -342,10 +341,10 @@ void PairGayBerne::coeff(int narg, char **arg)
    init specific to this pair style
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::init_style()
+void PairGayBerneWCA::init_style()
 {
   avec = (AtomVecEllipsoid *) atom->style_match("ellipsoid");
-  if (!avec) error->all(FLERR,"Pair gayberne requires atom style ellipsoid");
+  if (!avec) error->all(FLERR,"Pair gayberne/wca requires atom style ellipsoid");
 
   neighbor->request(this,instance_me);
 
@@ -356,25 +355,25 @@ void PairGayBerne::init_style()
   for (int i = 1; i <= atom->ntypes; i++) {
     if (!atom->shape_consistency(i,shape1[i][0],shape1[i][1],shape1[i][2]))
       error->all(FLERR,
-                 "Pair gayberne requires atoms with same type have same shape");
+                 "Pair gayberne/wca requires atoms with same type have same shape");
     if (shape1[i][0] == 0.0)
       shape1[i][0] = shape1[i][1] = shape1[i][2] = 1.0;
     shape2[i][0] = shape1[i][0]*shape1[i][0];
     shape2[i][1] = shape1[i][1]*shape1[i][1];
     shape2[i][2] = shape1[i][2]*shape1[i][2];
     lshape[i] = (shape1[i][0]*shape1[i][1]+shape1[i][2]*shape1[i][2]) *
-      sqrt(shape1[i][0]*shape1[i][1]);
+      std::sqrt(shape1[i][0]*shape1[i][1]);
   }
 }
 
 /* ----------------------------------------------------------------------
-   init for one type pair i,j and corresponding j,i
+   init for one type pair i, j and corresponding j, i
 ------------------------------------------------------------------------- */
 
-double PairGayBerne::init_one(int i, int j)
+double PairGayBerneWCA::init_one(int i, int j)
 {
   if (setwell[i] == 0 || setwell[j] == 0)
-    error->all(FLERR,"Pair gayberne epsilon a,b,c coeffs are not all set");
+    error->all(FLERR,"Pair gayberne/wca epsilon a,b,c coeffs are not all set");
 
   if (setflag[i][j] == 0) {
     epsilon[i][j] = mix_energy(epsilon[i][i],epsilon[j][j],
@@ -383,14 +382,27 @@ double PairGayBerne::init_one(int i, int j)
     cut[i][j] = mix_distance(cut[i][i],cut[j][j]);
   }
 
-  lj1[i][j] = 48.0 * epsilon[i][j] * pow(sigma[i][j],12.0);
-  lj2[i][j] = 24.0 * epsilon[i][j] * pow(sigma[i][j],6.0);
-  lj3[i][j] = 4.0 * epsilon[i][j] * pow(sigma[i][j],12.0);
-  lj4[i][j] = 4.0 * epsilon[i][j] * pow(sigma[i][j],6.0);
+  const double sij   = sigma[i][j];
+  const double epsij = epsilon[i][j];
 
+  const double sij2  = sij*sij;
+  const double sij4  = sij2*sij2;
+  const double sij6  = sij4*sij2;
+  const double sij12 = sij6*sij6;
+
+  lj1[i][j] = 48.0 * epsij * sij12;
+  lj2[i][j] = 24.0 * epsij * sij6;
+  lj3[i][j] =  4.0 * epsij * sij12;
+  lj4[i][j] =  4.0 * epsij * sij6;
+
+  // standard LJ shift at global cut (only used for SPHERE_SPHERE)
   if (offset_flag && (cut[i][j] > 0.0)) {
-    double ratio = sigma[i][j] / cut[i][j];
-    offset[i][j] = 4.0 * epsilon[i][j] * (pow(ratio,12.0) - pow(ratio,6.0))+epsilon[i][j];
+    double ratio   = sij / cut[i][j];
+    double ratio2  = ratio*ratio;
+    double ratio4  = ratio2*ratio2;
+    double ratio6  = ratio4*ratio2;
+    double ratio12 = ratio6*ratio6;
+    offset[i][j] = 4.0 * epsij * (ratio12 - ratio6);
   } else offset[i][j] = 0.0;
 
   int ishape = 0;
@@ -408,20 +420,20 @@ double PairGayBerne::init_one(int i, int j)
     form[i][i] = form[j][j] = form[i][j] = form[j][i] = ELLIPSE_ELLIPSE;
   else if (ishape == 0) {
     form[i][i] = ELLIPSE_ELLIPSE; form[j][j] = ELLIPSE_ELLIPSE;
-    form[i][j] = SPHERE_ELLIPSE; form[j][i] = ELLIPSE_SPHERE;
+    form[i][j] = SPHERE_ELLIPSE;  form[j][i] = ELLIPSE_SPHERE;
   } else if (jshape == 0) {
-    form[j][j] = SPHERE_ELLIPSE; form[i][i] = ELLIPSE_ELLIPSE;
-    form[j][i] = SPHERE_ELLIPSE; form[i][j] = ELLIPSE_SPHERE;
+    form[j][j] = SPHERE_ELLIPSE;  form[i][i] = ELLIPSE_ELLIPSE;
+    form[j][i] = SPHERE_ELLIPSE;  form[i][j] = ELLIPSE_SPHERE;
   } else
     form[i][i] = form[j][j] = form[i][j] = form[j][i] = ELLIPSE_ELLIPSE;
 
   epsilon[j][i] = epsilon[i][j];
-  sigma[j][i] = sigma[i][j];
-  lj1[j][i] = lj1[i][j];
-  lj2[j][i] = lj2[i][j];
-  lj3[j][i] = lj3[i][j];
-  lj4[j][i] = lj4[i][j];
-  offset[j][i] = offset[i][j];
+  sigma[j][i]   = sigma[i][j];
+  lj1[j][i]     = lj1[i][j];
+  lj2[j][i]     = lj2[i][j];
+  lj3[j][i]     = lj3[i][j];
+  lj4[j][i]     = lj4[i][j];
+  offset[j][i]  = offset[i][j];
 
   return cut[i][j];
 }
@@ -430,7 +442,7 @@ double PairGayBerne::init_one(int i, int j)
    proc 0 writes to restart file
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::write_restart(FILE *fp)
+void PairGayBerneWCA::write_restart(FILE *fp)
 {
   write_restart_settings(fp);
 
@@ -453,7 +465,7 @@ void PairGayBerne::write_restart(FILE *fp)
    proc 0 reads from restart file, bcasts
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::read_restart(FILE *fp)
+void PairGayBerneWCA::read_restart(FILE *fp)
 {
   read_restart_settings(fp);
   allocate();
@@ -488,7 +500,7 @@ void PairGayBerne::read_restart(FILE *fp)
    proc 0 writes to restart file
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::write_restart_settings(FILE *fp)
+void PairGayBerneWCA::write_restart_settings(FILE *fp)
 {
   fwrite(&gamma,sizeof(double),1,fp);
   fwrite(&upsilon,sizeof(double),1,fp);
@@ -502,7 +514,7 @@ void PairGayBerne::write_restart_settings(FILE *fp)
    proc 0 reads from restart file, bcasts
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::read_restart_settings(FILE *fp)
+void PairGayBerneWCA::read_restart_settings(FILE *fp)
 {
   int me = comm->me;
   if (me == 0) {
@@ -525,37 +537,36 @@ void PairGayBerne::read_restart_settings(FILE *fp)
    proc 0 writes to data file
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::write_data(FILE *fp)
+void PairGayBerneWCA::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     fprintf(fp,"%d %g %g %g %g %g %g %g %g\n",i,
             epsilon[i][i],sigma[i][i],
-            pow(well[i][0],-mu),pow(well[i][1],-mu),pow(well[i][2],-mu),
-            pow(well[i][0],-mu),pow(well[i][1],-mu),pow(well[i][2],-mu));
+            std::pow(well[i][0],-mu),std::pow(well[i][1],-mu),std::pow(well[i][2],-mu),
+            std::pow(well[i][0],-mu),std::pow(well[i][1],-mu),std::pow(well[i][2],-mu));
 }
 
 /* ----------------------------------------------------------------------
    proc 0 writes all pairs to data file
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::write_data_all(FILE *fp)
+void PairGayBerneWCA::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
       fprintf(fp,"%d %d %g %g %g %g %g %g %g %g %g\n",i,j,
               epsilon[i][i],sigma[i][i],
-              pow(well[i][0],-mu),pow(well[i][1],-mu),pow(well[i][2],-mu),
-              pow(well[j][0],-mu),pow(well[j][1],-mu),pow(well[j][2],-mu),
+              std::pow(well[i][0],-mu),std::pow(well[i][1],-mu),std::pow(well[i][2],-mu),
+              std::pow(well[j][0],-mu),std::pow(well[j][1],-mu),std::pow(well[j][2],-mu),
               cut[i][j]);
 }
 
 /* ----------------------------------------------------------------------
    compute analytic energy, force (fforce), and torque (ttor & rtor)
-   based on rotation matrices a and precomputed matrices b and g
-   if newton is off, rtor is not calculated for ghost atoms
+   WCA-like repulsive GB: truncated at r_min and shifted by +epsilon(orientation)
 ------------------------------------------------------------------------- */
 
-double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
+double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3],
                                        double a2[3][3], double b1[3][3],
                                        double b2[3][3], double g1[3][3],
                                        double g2[3][3], double *r12,
@@ -570,9 +581,12 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
   int newton_pair = force->newton_pair;
   int nlocal = atom->nlocal;
 
+  const int itype = type[i];
+  const int jtype = type[j];
+
   double r12hat[3];
   MathExtra::normalize3(r12,r12hat);
-  double r = sqrt(rsq);
+  double r = std::sqrt(rsq);
 
   // compute distance of closest approach
 
@@ -588,24 +602,35 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
   tempv[1] = kappa[1]/r;
   tempv[2] = kappa[2]/r;
   double sigma12 = MathExtra::dot3(r12hat,tempv);
-  sigma12 = pow(0.5*sigma12,-0.5);
+  sigma12 = std::pow(0.5*sigma12,-0.5);
   double h12 = r-sigma12;
 
-  // energy
-  // compute u_r
+  const double sigma0 = sigma[itype][jtype];
+  const double eps0   = epsilon[itype][jtype];
 
-  double varrho = sigma[type[i]][type[j]]/(h12+gamma*sigma[type[i]][type[j]]);
-  double varrho6 = pow(varrho,6.0);
-  double varrho12 = varrho6*varrho6;
-  double u_r = 0;
-  if ( h12 < ((pow(2, 1/6)-1)*sigma[type[i]][type[j]])) { 
-  u_r = 4.0*epsilon[type[i]][type[j]]*(varrho12-varrho6)+epsilon[type[i]][type[j]];
+  // WCA-like radial part: only active for r < r_min
+  double varrho = 0.0, varrho6 = 0.0, varrho12 = 0.0;
+  double u_r = 0.0;
+  const double rmin = sigma12 + (TWO_1_6 - 1.0)*sigma0;
+
+  if (r < rmin) {
+    double denom = h12 + gamma*sigma0;
+    varrho = sigma0 / denom;
+    double varrho2 = varrho*varrho;
+    double varrho4 = varrho2*varrho2;
+    varrho6 = varrho4*varrho2;
+    varrho12 = varrho6*varrho6;
+    // φ_gb + ε_ij, orientation scaling applied later
+    u_r = 4.0*eps0*(varrho12-varrho6) + eps0;
+  } else {
+    u_r = 0.0;
   }
+
   // compute eta_12
 
-  double eta = 2.0*lshape[type[i]]*lshape[type[j]];
+  double eta = 2.0*lshape[itype]*lshape[jtype];
   double det_g12 = MathExtra::det3(g12);
-  eta = pow(eta/det_g12,upsilon);
+  eta = std::pow(eta/det_g12,upsilon);
 
   // compute chi_12
 
@@ -615,25 +640,29 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
   ierror = MathExtra::mldivide3(b12,r12,iota);
   if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
 
-  // tempv = G12^-1*r12hat
-
   tempv[0] = iota[0]/r;
   tempv[1] = iota[1]/r;
   tempv[2] = iota[2]/r;
   double chi = MathExtra::dot3(r12hat,tempv);
-  chi = pow(chi*2.0,mu);
+  chi = std::pow(chi*2.0,mu);
 
   // force
   // compute dUr/dr
 
-  temp1 = 0;
-  if (r < (pow(2, 1/6)-1)*sigma[type[i]][type[j]]+sigma12) temp1 = (2.0*varrho12*varrho-varrho6*varrho)/sigma[type[i]][type[j]];
+  temp1 = 0.0;
+  double u_slj = 0.0;
+  if (r < rmin) {
+    double varrho7 = varrho6*varrho;
+    (void)varrho7; // just to avoid unused warning in some builds
+    temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
+    temp1 *= 24.0*eps0;
+    double sigma12_3 = sigma12*sigma12*sigma12;
+    u_slj = temp1*sigma12_3*0.5;
+  }
 
-  temp1 = temp1*24.0*epsilon[type[i]][type[j]];
-  double u_slj = temp1*pow(sigma12,3.0)/2.0;
   double dUr[3];
   temp2 = MathExtra::dot3(kappa,r12hat);
-  double uslj_rsq = u_slj/rsq;
+  double uslj_rsq = (rsq > 0.0) ? u_slj/rsq : 0.0;
   dUr[0] = temp1*r12hat[0]+uslj_rsq*(kappa[0]-temp2*r12hat[0]);
   dUr[1] = temp1*r12hat[1]+uslj_rsq*(kappa[1]-temp2*r12hat[1]);
   dUr[2] = temp1*r12hat[2]+uslj_rsq*(kappa[2]-temp2*r12hat[2]);
@@ -642,7 +671,7 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
 
   double dchi[3];
   temp1 = MathExtra::dot3(iota,r12hat);
-  temp2 = -4.0/rsq*mu*pow(chi,(mu-1.0)/mu);
+  temp2 = -4.0/rsq*mu*std::pow(chi,(mu-1.0)/mu);
   dchi[0] = temp2*(iota[0]-temp1*r12hat[0]);
   dchi[1] = temp2*(iota[1]-temp1*r12hat[1]);
   dchi[2] = temp2*(iota[2]-temp1*r12hat[2]);
@@ -689,7 +718,7 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
 
   double deta[3];
   deta[0] = deta[1] = deta[2] = 0.0;
-  compute_eta_torque(g12,a1,shape2[type[i]],temp);
+  compute_eta_torque(g12,a1,shape2[itype],temp);
   temp1 = -eta*upsilon;
   for (int m = 0; m < 3; m++) {
     for (int y = 0; y < 3; y++) tempv[y] = temp1*temp[m][y];
@@ -704,7 +733,7 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
   double deta2[3];
   if (newton_pair || j < nlocal) {
     deta2[0] = deta2[1] = deta2[2] = 0.0;
-    compute_eta_torque(g12,a2,shape2[type[j]],temp);
+    compute_eta_torque(g12,a2,shape2[jtype],temp);
     for (int m = 0; m < 3; m++) {
       for (int y = 0; y < 3; y++) tempv[y] = temp1*temp[m][y];
       MathExtra::cross3(a2[m],tempv,tempv2);
@@ -716,49 +745,52 @@ double PairGayBerne::gayberne_analytic(const int i,const int j,double a1[3][3],
 
   // torque
 
-  temp1 = u_r*eta;
-  temp2 = u_r*chi;
-  temp3 = chi*eta;
+  double temp_eta     = u_r*eta;
+  double temp_u_chi   = u_r*chi;
+  double temp_chi_eta = chi*eta;
 
-  ttor[0] = (temp1*dchi[0]+temp2*deta[0]+temp3*dUr[0]) * -1.0;
-  ttor[1] = (temp1*dchi[1]+temp2*deta[1]+temp3*dUr[1]) * -1.0;
-  ttor[2] = (temp1*dchi[2]+temp2*deta[2]+temp3*dUr[2]) * -1.0;
+  ttor[0] = (temp_eta*dchi[0]+temp_u_chi*deta[0]+temp_chi_eta*dUr[0]) * -1.0;
+  ttor[1] = (temp_eta*dchi[1]+temp_u_chi*deta[1]+temp_chi_eta*dUr[1]) * -1.0;
+  ttor[2] = (temp_eta*dchi[2]+temp_u_chi*deta[2]+temp_chi_eta*dUr[2]) * -1.0;
 
   if (newton_pair || j < nlocal) {
-    rtor[0] = (temp1*dchi2[0]+temp2*deta2[0]+temp3*dUr2[0]) * -1.0;
-    rtor[1] = (temp1*dchi2[1]+temp2*deta2[1]+temp3*dUr2[1]) * -1.0;
-    rtor[2] = (temp1*dchi2[2]+temp2*deta2[2]+temp3*dUr2[2]) * -1.0;
+    rtor[0] = (temp_eta*dchi2[0]+temp_u_chi*deta2[0]+temp_chi_eta*dUr2[0]) * -1.0;
+    rtor[1] = (temp_eta*dchi2[1]+temp_u_chi*deta2[1]+temp_chi_eta*dUr2[1]) * -1.0;
+    rtor[2] = (temp_eta*dchi2[2]+temp_u_chi*deta2[2]+temp_chi_eta*dUr2[2]) * -1.0;
   }
 
-  return temp1*chi;
+  return temp_eta*chi;
 }
 
 /* ----------------------------------------------------------------------
    compute analytic energy, force (fforce), and torque (ttor)
-   between ellipsoid and lj particle
+   between ellipsoid and LJ-like particle (repulsive GB-WCA)
 ------------------------------------------------------------------------- */
 
-double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
+double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
                                  double b1[3][3],double g1[3][3],
                                  double *r12,const double rsq,double *fforce,
                                  double *ttor)
 {
   double tempv[3], tempv2[3];
   double temp[3][3];
-  double temp1,temp2,temp3;
+  double temp1,temp2;
 
   int *type = atom->type;
 
+  const int itype = type[i];
+  const int jtype = type[j];
+
   double r12hat[3];
   MathExtra::normalize3(r12,r12hat);
-  double r = sqrt(rsq);
+  double r = std::sqrt(rsq);
 
   // compute distance of closest approach
 
   double g12[3][3];
-  g12[0][0] = g1[0][0]+shape2[type[j]][0];
-  g12[1][1] = g1[1][1]+shape2[type[j]][0];
-  g12[2][2] = g1[2][2]+shape2[type[j]][0];
+  g12[0][0] = g1[0][0]+shape2[jtype][0];
+  g12[1][1] = g1[1][1]+shape2[jtype][0];
+  g12[2][2] = g1[2][2]+shape2[jtype][0];
   g12[0][1] = g1[0][1]; g12[1][0] = g1[1][0];
   g12[0][2] = g1[0][2]; g12[2][0] = g1[2][0];
   g12[1][2] = g1[1][2]; g12[2][1] = g1[2][1];
@@ -766,63 +798,79 @@ double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
   int ierror = MathExtra::mldivide3(g12,r12,kappa);
   if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
 
-  // tempv = G12^-1*r12hat
-
   tempv[0] = kappa[0]/r;
   tempv[1] = kappa[1]/r;
   tempv[2] = kappa[2]/r;
   double sigma12 = MathExtra::dot3(r12hat,tempv);
-  sigma12 = pow(0.5*sigma12,-0.5);
+  sigma12 = std::pow(0.5*sigma12,-0.5);
   double h12 = r-sigma12;
 
-  // energy
-  // compute u_r
+  const double sigma0 = sigma[itype][jtype];
+  const double eps0   = epsilon[itype][jtype];
 
-  double varrho = sigma[type[i]][type[j]]/(h12+gamma*sigma[type[i]][type[j]]);
-  double varrho6 = pow(varrho,6.0);
-  double varrho12 = varrho6*varrho6;
-  double u_r = 0;
-  if (r < (pow(2, 1/6)-1)*sigma[type[i]][type[j]]+sigma12) { u_r = 4.0*epsilon[type[i]][type[j]]*(varrho12-varrho6)+epsilon[type[i]][type[j]];
+  // WCA-like radial part
+  double varrho = 0.0, varrho6 = 0.0, varrho12 = 0.0;
+  double u_r = 0.0;
+  const double rmin = sigma12 + (TWO_1_6 - 1.0)*sigma0;
+
+  if (r < rmin) {
+    double denom = h12 + gamma*sigma0;
+    varrho = sigma0/denom;
+    double varrho2 = varrho*varrho;
+    double varrho4 = varrho2*varrho2;
+    varrho6 = varrho4*varrho2;
+    varrho12 = varrho6*varrho6;
+    u_r = 4.0*eps0*(varrho12-varrho6)+eps0;
+  } else {
+    u_r = 0.0;
   }
+
   // compute eta_12
 
-  double eta = 2.0*lshape[type[i]]*lshape[type[j]];
+  double eta = 2.0*lshape[itype]*lshape[jtype];
   double det_g12 = MathExtra::det3(g12);
-  eta = pow(eta/det_g12,upsilon);
+  eta = std::pow(eta/det_g12,upsilon);
 
   // compute chi_12
 
   double b12[3][3];
   double iota[3];
-  b12[0][0] = b1[0][0] + well[type[j]][0];
-  b12[1][1] = b1[1][1] + well[type[j]][0];
-  b12[2][2] = b1[2][2] + well[type[j]][0];
+  b12[0][0] = b1[0][0] + well[jtype][0];
+  b12[1][1] = b1[1][1] + well[jtype][0];
+  b12[2][2] = b1[2][2] + well[jtype][0];
   b12[0][1] = b1[0][1]; b12[1][0] = b1[1][0];
   b12[0][2] = b1[0][2]; b12[2][0] = b1[2][0];
   b12[1][2] = b1[1][2]; b12[2][1] = b1[2][1];
   ierror = MathExtra::mldivide3(b12,r12,iota);
   if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
 
-  // tempv = G12^-1*r12hat
-
   tempv[0] = iota[0]/r;
   tempv[1] = iota[1]/r;
   tempv[2] = iota[2]/r;
   double chi = MathExtra::dot3(r12hat,tempv);
-  chi = pow(chi*2.0,mu);
+  chi = std::pow(chi*2.0,mu);
 
   // force
   // compute dUr/dr
-  temp1 = 0;
-  if (r < (pow(2, 1/6)-1)*sigma[type[i]][type[j]]+sigma12) {
-      temp1 = (2.0*varrho12*varrho-varrho6*varrho)/sigma[type[i]][type[j]];
+
+  temp1 = 0.0;
+  double u_slj = 0.0;
+  if (r < rmin) {
+    double denom = h12 + gamma*sigma0;
+    varrho = sigma0/denom;
+    double varrho2 = varrho*varrho;
+    double varrho4 = varrho2*varrho2;
+    varrho6 = varrho4*varrho2;
+    varrho12 = varrho6*varrho6;
+    temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
+    temp1 *= 24.0*eps0;
+    double sigma12_3 = sigma12*sigma12*sigma12;
+    u_slj = temp1*sigma12_3*0.5;
   }
 
-  temp1 = temp1*24.0*epsilon[type[i]][type[j]];
-  double u_slj = temp1*pow(sigma12,3.0)/2.0;
   double dUr[3];
   temp2 = MathExtra::dot3(kappa,r12hat);
-  double uslj_rsq = u_slj/rsq;
+  double uslj_rsq = (rsq > 0.0) ? u_slj/rsq : 0.0;
   dUr[0] = temp1*r12hat[0]+uslj_rsq*(kappa[0]-temp2*r12hat[0]);
   dUr[1] = temp1*r12hat[1]+uslj_rsq*(kappa[1]-temp2*r12hat[1]);
   dUr[2] = temp1*r12hat[2]+uslj_rsq*(kappa[2]-temp2*r12hat[2]);
@@ -831,7 +879,7 @@ double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
 
   double dchi[3];
   temp1 = MathExtra::dot3(iota,r12hat);
-  temp2 = -4.0/rsq*mu*pow(chi,(mu-1.0)/mu);
+  temp2 = -4.0/rsq*mu*std::pow(chi,(mu-1.0)/mu);
   dchi[0] = temp2*(iota[0]-temp1*r12hat[0]);
   dchi[1] = temp2*(iota[1]-temp1*r12hat[1]);
   dchi[2] = temp2*(iota[2]-temp1*r12hat[2]);
@@ -842,11 +890,11 @@ double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
   fforce[1] = temp1*dchi[1]-temp2*dUr[1];
   fforce[2] = temp1*dchi[2]-temp2*dUr[2];
 
-  // torque for particle 1 and 2
+  // torque for particle 1
   // compute dUr
 
   tempv[0] = -uslj_rsq*kappa[0];
-  tempv[1] = -uslj_rsq*kappa[1];
+  tempv[1] = -uslj_rsq+kappa[1];
   tempv[2] = -uslj_rsq*kappa[2];
   MathExtra::vecmat(kappa,g1,tempv2);
   MathExtra::cross3(tempv,tempv2,dUr);
@@ -855,16 +903,16 @@ double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
 
   MathExtra::vecmat(iota,b1,tempv);
   MathExtra::cross3(tempv,iota,dchi);
-  temp1 = -4.0/rsq;
-  dchi[0] *= temp1;
-  dchi[1] *= temp1;
-  dchi[2] *= temp1;
+  double t2 = -4.0/rsq;
+  dchi[0] *= t2;
+  dchi[1] *= t2;
+  dchi[2] *= t2;
 
   // compute d_eta
 
   double deta[3];
   deta[0] = deta[1] = deta[2] = 0.0;
-  compute_eta_torque(g12,a1,shape2[type[i]],temp);
+  compute_eta_torque(g12,a1,shape2[itype],temp);
   temp1 = -eta*upsilon;
   for (int m = 0; m < 3; m++) {
     for (int y = 0; y < 3; y++) tempv[y] = temp1*temp[m][y];
@@ -876,15 +924,15 @@ double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
 
   // torque
 
-  temp1 = u_r*eta;
-  temp2 = u_r*chi;
-  temp3 = chi*eta;
+  double temp_eta     = u_r*eta;
+  double temp_u_chi   = u_r*chi;
+  double temp_chi_eta = chi*eta;
 
-  ttor[0] = (temp1*dchi[0]+temp2*deta[0]+temp3*dUr[0]) * -1.0;
-  ttor[1] = (temp1*dchi[1]+temp2*deta[1]+temp3*dUr[1]) * -1.0;
-  ttor[2] = (temp1*dchi[2]+temp2*deta[2]+temp3*dUr[2]) * -1.0;
+  ttor[0] = (temp_eta*dchi[0]+temp_u_chi*deta[0]+temp_chi_eta*dUr[0]) * -1.0;
+  ttor[1] = (temp_eta*dchi[1]+temp_u_chi*deta[1]+temp_chi_eta*dUr[1]) * -1.0;
+  ttor[2] = (temp_eta*dchi[2]+temp_u_chi*deta[2]+temp_chi_eta*dUr[2]) * -1.0;
 
-  return temp1*chi;
+  return temp_eta*chi;
 }
 
 /* ----------------------------------------------------------------------
@@ -894,7 +942,7 @@ double PairGayBerne::gayberne_lj(const int i,const int j,double a1[3][3],
    m is g12, m2 is a_i, s is the shape for the particle
 ------------------------------------------------------------------------- */
 
-void PairGayBerne::compute_eta_torque(double m[3][3], double m2[3][3],
+void PairGayBerneWCA::compute_eta_torque(double m[3][3], double m2[3][3],
                                       double *s, double ans[3][3])
 {
   double den = m[1][0]*m[0][2]*m[2][1]-m[0][0]*m[1][2]*m[2][1]-
