@@ -177,6 +177,42 @@ dump_modify trajectory sort id \
      colname c_orient[7] shapez
 ```
 
+### Two-dimensional example
+
+`in.gayberne_wca_ovito_2d` is the corresponding tested 2-D example. It
+creates 100 ellipses in the `xy` plane and writes
+`dump.gayberne_wca_2d.lammpstrj` with the same OVITO-compatible quaternion
+and shape columns.
+
+Run it in the same way:
+
+```bash
+mkdir -p /tmp/gayberne_wca_2d
+cd /tmp/gayberne_wca_2d
+/path/to/lmp -in /path/to/in.gayberne_wca_ovito_2d
+```
+
+For planar dynamics, use all of the following:
+
+```lammps
+dimension 2
+atom_style ellipsoid
+set group all quat/random 18238
+fix integrate all nve/asphere
+fix planar all enforce2d
+```
+
+In two dimensions, `quat/random` generates rotations about the `z` axis
+only. `fix enforce2d` removes `z` force and velocity as well as `x`/`y`
+torque and angular momentum. Do not initialize arbitrary 3-D quaternions in
+a 2-D simulation.
+
+The calculation remains the three-dimensional Gay-Berne shape formula
+restricted to center vectors and rotations in the `xy` plane. Consequently,
+the third shape value must remain positive and can affect the `eta` energy
+factor even though particles do not move out of plane. A common planar
+prolate choice is therefore `shape 3.0 1.4 1.0`, as used in the example.
+
 ## Notes
 
 - Do not add an attractive interaction accidentally through a
