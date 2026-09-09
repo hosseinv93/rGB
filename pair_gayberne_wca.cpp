@@ -28,7 +28,7 @@ using namespace LAMMPS_NS;
 
 // precompute 2^(1/6) once
 namespace {
-  const double TWO_1_6 = std::pow(2.0,1.0/6.0);
+constexpr double TWO_1_6 = 1.1224620483093729814;
 }
 
 static const char cite_pair_gayberne_wca[] =
@@ -50,6 +50,8 @@ PairGayBerneWCA::PairGayBerneWCA(LAMMPS *lmp) : Pair(lmp)
 
   single_enable = 0;
   writedata = 1;
+  orientation = nullptr;
+  orientation_nmax = 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -73,10 +75,10 @@ PairGayBerneWCA::~PairGayBerneWCA()
     memory->destroy(lj2);
     memory->destroy(lj3);
     memory->destroy(lj4);
-    memory->destroy(offset);
     delete [] lshape;
     delete [] setwell;
   }
+  memory->destroy(orientation);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -86,9 +88,8 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
   int i,j,ii,jj,inum,jnum,itype,jtype;
   double evdwl,one_eng,rsq,r2inv,r6inv,forcelj,factor_lj;
   double fforce[3],ttor[3],rtor[3],r12[3];
-  double a1[3][3],b1[3][3],g1[3][3],a2[3][3],b2[3][3],g2[3][3],temp[3][3];
+  double temp[3][3];
   int *ilist,*jlist,*numneigh,**firstneigh;
-  double *iquat,*jquat;
 
   evdwl = 0.0;
   ev_init(eflag,vflag);
@@ -108,20 +109,32 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
   numneigh = list->numneigh;
   firstneigh = list->firstneigh;
 
+  // An atom can occur as j in many neighbor pairs.  Cache its orientation-
+  // dependent matrices once per timestep instead of rebuilding them for
+  // every occurrence in the inner loop.
+
+  if (atom->nmax > orientation_nmax) {
+    orientation_nmax = atom->nmax;
+    memory->grow(orientation,orientation_nmax,"pair:orientation");
+  }
+  const int nall = nlocal + atom->nghost;
+  for (i = 0; i < nall; i++) {
+    const int ktype = type[i];
+    if (form[ktype][ktype] != ELLIPSE_ELLIPSE) continue;
+    double *quat = bonus[ellipsoid[i]].quat;
+    MathExtra::quat_to_mat_trans(quat,orientation[i].a);
+    MathExtra::diag_times3(well[ktype],orientation[i].a,temp);
+    MathExtra::transpose_times3(orientation[i].a,temp,orientation[i].b);
+    MathExtra::diag_times3(shape2[ktype],orientation[i].a,temp);
+    MathExtra::transpose_times3(orientation[i].a,temp,orientation[i].g);
+  }
+
   // loop over neighbors of my atoms
 
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
     itype = type[i];
-
-    if (form[itype][itype] == ELLIPSE_ELLIPSE) {
-      iquat = bonus[ellipsoid[i]].quat;
-      MathExtra::quat_to_mat_trans(iquat,a1);
-      MathExtra::diag_times3(well[itype],a1,temp);
-      MathExtra::transpose_times3(a1,temp,b1);
-      MathExtra::diag_times3(shape2[itype],a1,temp);
-      MathExtra::transpose_times3(a1,temp,g1);
-    }
+    OrientationMatrices &oi = orientation[i];
 
     jlist = firstneigh[i];
     jnum = numneigh[i];
@@ -150,8 +163,8 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
           forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]);
           forcelj *= -r2inv;
           if (eflag) one_eng =
-                       r6inv*(r6inv*lj3[itype][jtype]-lj4[itype][jtype]) -
-                       offset[itype][jtype];
+                       r6inv*(r6inv*lj3[itype][jtype]-lj4[itype][jtype]) +
+                       epsilon[itype][jtype];
           fforce[0] = r12[0]*forcelj;
           fforce[1] = r12[1]*forcelj;
           fforce[2] = r12[2]*forcelj;
@@ -160,30 +173,20 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
           break;
 
         case SPHERE_ELLIPSE:
-          jquat = bonus[ellipsoid[j]].quat;
-          MathExtra::quat_to_mat_trans(jquat,a2);
-          MathExtra::diag_times3(well[jtype],a2,temp);
-          MathExtra::transpose_times3(a2,temp,b2);
-          MathExtra::diag_times3(shape2[jtype],a2,temp);
-          MathExtra::transpose_times3(a2,temp,g2);
-          one_eng = gayberne_lj(j,i,a2,b2,g2,r12,rsq,fforce,rtor);
+          one_eng = gayberne_lj(j,i,orientation[j].a,orientation[j].b,
+                                orientation[j].g,r12,rsq,fforce,rtor);
           ttor[0] = ttor[1] = ttor[2] = 0.0;
           break;
 
         case ELLIPSE_SPHERE:
-          one_eng = gayberne_lj(i,j,a1,b1,g1,r12,rsq,fforce,ttor);
+          one_eng = gayberne_lj(i,j,oi.a,oi.b,oi.g,r12,rsq,fforce,ttor);
           rtor[0] = rtor[1] = rtor[2] = 0.0;
           break;
 
         default:
-          jquat = bonus[ellipsoid[j]].quat;
-          MathExtra::quat_to_mat_trans(jquat,a2);
-          MathExtra::diag_times3(well[jtype],a2,temp);
-          MathExtra::transpose_times3(a2,temp,b2);
-          MathExtra::diag_times3(shape2[jtype],a2,temp);
-          MathExtra::transpose_times3(a2,temp,g2);
-          one_eng = gayberne_analytic(i,j,a1,a2,b1,b2,g1,g2,r12,rsq,
-                                      fforce,ttor,rtor);
+          one_eng = gayberne_analytic(i,j,oi.a,orientation[j].a,oi.b,
+                                      orientation[j].b,oi.g,orientation[j].g,
+                                      r12,rsq,fforce,ttor,rtor);
           break;
         }
 
@@ -252,8 +255,6 @@ void PairGayBerneWCA::allocate()
   memory->create(lj2,n+1,n+1,"pair:lj2");
   memory->create(lj3,n+1,n+1,"pair:lj3");
   memory->create(lj4,n+1,n+1,"pair:lj4");
-  memory->create(offset,n+1,n+1,"pair:offset");
-
   lshape = new double[n+1];
   setwell = new int[n+1];
   for (int i = 1; i <= n; i++) setwell[i] = 0;
@@ -395,16 +396,6 @@ double PairGayBerneWCA::init_one(int i, int j)
   lj3[i][j] =  4.0 * epsij * sij12;
   lj4[i][j] =  4.0 * epsij * sij6;
 
-  // standard LJ shift at global cut (only used for SPHERE_SPHERE)
-  if (offset_flag && (cut[i][j] > 0.0)) {
-    double ratio   = sij / cut[i][j];
-    double ratio2  = ratio*ratio;
-    double ratio4  = ratio2*ratio2;
-    double ratio6  = ratio4*ratio2;
-    double ratio12 = ratio6*ratio6;
-    offset[i][j] = 4.0 * epsij * (ratio12 - ratio6);
-  } else offset[i][j] = 0.0;
-
   int ishape = 0;
   if (shape1[i][0] != shape1[i][1] ||
       shape1[i][0] != shape1[i][2] ||
@@ -417,12 +408,12 @@ double PairGayBerneWCA::init_one(int i, int j)
   if (setwell[j] == 1) jshape = 1;
 
   if (ishape == 0 && jshape == 0)
-    form[i][i] = form[j][j] = form[i][j] = form[j][i] = ELLIPSE_ELLIPSE;
+    form[i][i] = form[j][j] = form[i][j] = form[j][i] = SPHERE_SPHERE;
   else if (ishape == 0) {
-    form[i][i] = ELLIPSE_ELLIPSE; form[j][j] = ELLIPSE_ELLIPSE;
+    form[i][i] = SPHERE_SPHERE; form[j][j] = ELLIPSE_ELLIPSE;
     form[i][j] = SPHERE_ELLIPSE;  form[j][i] = ELLIPSE_SPHERE;
   } else if (jshape == 0) {
-    form[j][j] = SPHERE_ELLIPSE;  form[i][i] = ELLIPSE_ELLIPSE;
+    form[j][j] = SPHERE_SPHERE; form[i][i] = ELLIPSE_ELLIPSE;
     form[j][i] = SPHERE_ELLIPSE;  form[i][j] = ELLIPSE_SPHERE;
   } else
     form[i][i] = form[j][j] = form[i][j] = form[j][i] = ELLIPSE_ELLIPSE;
@@ -433,9 +424,20 @@ double PairGayBerneWCA::init_one(int i, int j)
   lj2[j][i]     = lj2[i][j];
   lj3[j][i]     = lj3[i][j];
   lj4[j][i]     = lj4[i][j];
-  offset[j][i]  = offset[i][j];
+  // Do not put pairs in the neighbor list beyond the largest possible WCA
+  // range.  The user cutoff can still impose a shorter range explicitly.
 
-  return cut[i][j];
+  double cut_wca;
+  if (form[i][j] == SPHERE_SPHERE) {
+    cut_wca = TWO_1_6*sigma[i][j];
+  } else {
+    const double imax = MAX(shape1[i][0],MAX(shape1[i][1],shape1[i][2]));
+    const double jmax = MAX(shape1[j][0],MAX(shape1[j][1],shape1[j][2]));
+    cut_wca = std::sqrt(2.0*(imax*imax+jmax*jmax)) +
+      (TWO_1_6-gamma)*sigma[i][j];
+  }
+
+  return MIN(cut[i][j],MAX(0.0,cut_wca));
 }
 
 /* ----------------------------------------------------------------------
@@ -555,7 +557,7 @@ void PairGayBerneWCA::write_data_all(FILE *fp)
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
       fprintf(fp,"%d %d %g %g %g %g %g %g %g %g %g\n",i,j,
-              epsilon[i][i],sigma[i][i],
+              epsilon[i][j],sigma[i][j],
               std::pow(well[i][0],-mu),std::pow(well[i][1],-mu),std::pow(well[i][2],-mu),
               std::pow(well[j][0],-mu),std::pow(well[j][1],-mu),std::pow(well[j][2],-mu),
               cut[i][j]);
@@ -584,9 +586,9 @@ double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3
   const int itype = type[i];
   const int jtype = type[j];
 
-  double r12hat[3];
-  MathExtra::normalize3(r12,r12hat);
-  double r = std::sqrt(rsq);
+  const double r = std::sqrt(rsq);
+  const double rinv = 1.0/r;
+  double r12hat[3] = {r12[0]*rinv,r12[1]*rinv,r12[2]*rinv};
 
   // compute distance of closest approach
 
@@ -602,7 +604,7 @@ double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3
   tempv[1] = kappa[1]/r;
   tempv[2] = kappa[2]/r;
   double sigma12 = MathExtra::dot3(r12hat,tempv);
-  sigma12 = std::pow(0.5*sigma12,-0.5);
+  sigma12 = 1.0/std::sqrt(0.5*sigma12);
   double h12 = r-sigma12;
 
   const double sigma0 = sigma[itype][jtype];
@@ -611,20 +613,23 @@ double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3
   // WCA-like radial part: only active for r < r_min
   double varrho = 0.0, varrho6 = 0.0, varrho12 = 0.0;
   double u_r = 0.0;
-  const double rmin = sigma12 + (TWO_1_6 - 1.0)*sigma0;
+  const double rmin = sigma12 + (TWO_1_6-gamma)*sigma0;
 
-  if (r < rmin) {
-    double denom = h12 + gamma*sigma0;
-    varrho = sigma0 / denom;
-    double varrho2 = varrho*varrho;
-    double varrho4 = varrho2*varrho2;
-    varrho6 = varrho4*varrho2;
-    varrho12 = varrho6*varrho6;
-    // φ_gb + ε_ij, orientation scaling applied later
-    u_r = 4.0*eps0*(varrho12-varrho6) + eps0;
-  } else {
-    u_r = 0.0;
+  if (r >= rmin) {
+    fforce[0] = fforce[1] = fforce[2] = 0.0;
+    ttor[0] = ttor[1] = ttor[2] = 0.0;
+    rtor[0] = rtor[1] = rtor[2] = 0.0;
+    return 0.0;
   }
+
+  double denom = h12 + gamma*sigma0;
+  varrho = sigma0 / denom;
+  double varrho2 = varrho*varrho;
+  double varrho4 = varrho2*varrho2;
+  varrho6 = varrho4*varrho2;
+  varrho12 = varrho6*varrho6;
+  // phi_gb + epsilon_ij, orientation scaling applied later
+  u_r = 4.0*eps0*(varrho12-varrho6) + eps0;
 
   // compute eta_12
 
@@ -643,22 +648,16 @@ double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3
   tempv[0] = iota[0]/r;
   tempv[1] = iota[1]/r;
   tempv[2] = iota[2]/r;
-  double chi = MathExtra::dot3(r12hat,tempv);
-  chi = std::pow(chi*2.0,mu);
+  const double chi_base = 2.0*MathExtra::dot3(r12hat,tempv);
+  const double chi = std::pow(chi_base,mu);
 
   // force
   // compute dUr/dr
 
-  temp1 = 0.0;
-  double u_slj = 0.0;
-  if (r < rmin) {
-    double varrho7 = varrho6*varrho;
-    (void)varrho7; // just to avoid unused warning in some builds
-    temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
-    temp1 *= 24.0*eps0;
-    double sigma12_3 = sigma12*sigma12*sigma12;
-    u_slj = temp1*sigma12_3*0.5;
-  }
+  temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
+  temp1 *= 24.0*eps0;
+  double sigma12_3 = sigma12*sigma12*sigma12;
+  double u_slj = temp1*sigma12_3*0.5;
 
   double dUr[3];
   temp2 = MathExtra::dot3(kappa,r12hat);
@@ -671,7 +670,7 @@ double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3
 
   double dchi[3];
   temp1 = MathExtra::dot3(iota,r12hat);
-  temp2 = -4.0/rsq*mu*std::pow(chi,(mu-1.0)/mu);
+  temp2 = -4.0/rsq*mu*chi/chi_base;
   dchi[0] = temp2*(iota[0]-temp1*r12hat[0]);
   dchi[1] = temp2*(iota[1]-temp1*r12hat[1]);
   dchi[2] = temp2*(iota[2]-temp1*r12hat[2]);
@@ -781,9 +780,9 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
   const int itype = type[i];
   const int jtype = type[j];
 
-  double r12hat[3];
-  MathExtra::normalize3(r12,r12hat);
-  double r = std::sqrt(rsq);
+  const double r = std::sqrt(rsq);
+  const double rinv = 1.0/r;
+  double r12hat[3] = {r12[0]*rinv,r12[1]*rinv,r12[2]*rinv};
 
   // compute distance of closest approach
 
@@ -802,7 +801,7 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
   tempv[1] = kappa[1]/r;
   tempv[2] = kappa[2]/r;
   double sigma12 = MathExtra::dot3(r12hat,tempv);
-  sigma12 = std::pow(0.5*sigma12,-0.5);
+  sigma12 = 1.0/std::sqrt(0.5*sigma12);
   double h12 = r-sigma12;
 
   const double sigma0 = sigma[itype][jtype];
@@ -811,19 +810,21 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
   // WCA-like radial part
   double varrho = 0.0, varrho6 = 0.0, varrho12 = 0.0;
   double u_r = 0.0;
-  const double rmin = sigma12 + (TWO_1_6 - 1.0)*sigma0;
+  const double rmin = sigma12 + (TWO_1_6-gamma)*sigma0;
 
-  if (r < rmin) {
-    double denom = h12 + gamma*sigma0;
-    varrho = sigma0/denom;
-    double varrho2 = varrho*varrho;
-    double varrho4 = varrho2*varrho2;
-    varrho6 = varrho4*varrho2;
-    varrho12 = varrho6*varrho6;
-    u_r = 4.0*eps0*(varrho12-varrho6)+eps0;
-  } else {
-    u_r = 0.0;
+  if (r >= rmin) {
+    fforce[0] = fforce[1] = fforce[2] = 0.0;
+    ttor[0] = ttor[1] = ttor[2] = 0.0;
+    return 0.0;
   }
+
+  double denom = h12 + gamma*sigma0;
+  varrho = sigma0/denom;
+  double varrho2 = varrho*varrho;
+  double varrho4 = varrho2*varrho2;
+  varrho6 = varrho4*varrho2;
+  varrho12 = varrho6*varrho6;
+  u_r = 4.0*eps0*(varrho12-varrho6)+eps0;
 
   // compute eta_12
 
@@ -847,26 +848,16 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
   tempv[0] = iota[0]/r;
   tempv[1] = iota[1]/r;
   tempv[2] = iota[2]/r;
-  double chi = MathExtra::dot3(r12hat,tempv);
-  chi = std::pow(chi*2.0,mu);
+  const double chi_base = 2.0*MathExtra::dot3(r12hat,tempv);
+  const double chi = std::pow(chi_base,mu);
 
   // force
   // compute dUr/dr
 
-  temp1 = 0.0;
-  double u_slj = 0.0;
-  if (r < rmin) {
-    double denom = h12 + gamma*sigma0;
-    varrho = sigma0/denom;
-    double varrho2 = varrho*varrho;
-    double varrho4 = varrho2*varrho2;
-    varrho6 = varrho4*varrho2;
-    varrho12 = varrho6*varrho6;
-    temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
-    temp1 *= 24.0*eps0;
-    double sigma12_3 = sigma12*sigma12*sigma12;
-    u_slj = temp1*sigma12_3*0.5;
-  }
+  temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
+  temp1 *= 24.0*eps0;
+  double sigma12_3 = sigma12*sigma12*sigma12;
+  double u_slj = temp1*sigma12_3*0.5;
 
   double dUr[3];
   temp2 = MathExtra::dot3(kappa,r12hat);
@@ -879,10 +870,10 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
 
   double dchi[3];
   temp1 = MathExtra::dot3(iota,r12hat);
-  temp2 = -4.0/rsq*mu*std::pow(chi,(mu-1.0)/mu);
-  dchi[0] = temp2*(iota[0]-temp1*r12hat[0]);
-  dchi[1] = temp2*(iota[1]-temp1*r12hat[1]);
-  dchi[2] = temp2*(iota[2]-temp1*r12hat[2]);
+  const double dchi_prefactor = -4.0/rsq*mu*chi/chi_base;
+  dchi[0] = dchi_prefactor*(iota[0]-temp1*r12hat[0]);
+  dchi[1] = dchi_prefactor*(iota[1]-temp1*r12hat[1]);
+  dchi[2] = dchi_prefactor*(iota[2]-temp1*r12hat[2]);
 
   temp1 = -eta*u_r;
   temp2 = eta*chi;
@@ -894,7 +885,7 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
   // compute dUr
 
   tempv[0] = -uslj_rsq*kappa[0];
-  tempv[1] = -uslj_rsq+kappa[1];
+  tempv[1] = -uslj_rsq*kappa[1];
   tempv[2] = -uslj_rsq*kappa[2];
   MathExtra::vecmat(kappa,g1,tempv2);
   MathExtra::cross3(tempv,tempv2,dUr);
@@ -903,10 +894,9 @@ double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
 
   MathExtra::vecmat(iota,b1,tempv);
   MathExtra::cross3(tempv,iota,dchi);
-  double t2 = -4.0/rsq;
-  dchi[0] *= t2;
-  dchi[1] *= t2;
-  dchi[2] *= t2;
+  dchi[0] *= dchi_prefactor;
+  dchi[1] *= dchi_prefactor;
+  dchi[2] *= dchi_prefactor;
 
   // compute d_eta
 

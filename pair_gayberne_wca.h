@@ -40,6 +40,12 @@ class PairGayBerneWCA : public Pair {
  protected:
   enum{SPHERE_SPHERE,SPHERE_ELLIPSE,ELLIPSE_SPHERE,ELLIPSE_ELLIPSE};
 
+  struct OrientationMatrices {
+    double a[3][3];
+    double b[3][3];
+    double g[3][3];
+  };
+
   double cut_global;
   double **cut;
 
@@ -52,9 +58,10 @@ class PairGayBerneWCA : public Pair {
 
   int **form;
   double **lj1,**lj2,**lj3,**lj4;
-  double **offset;
   int *setwell;
   class AtomVecEllipsoid *avec;
+  OrientationMatrices *orientation;
+  int orientation_nmax;
 
   void allocate();
   double gayberne_analytic(const int i, const int j, double a1[3][3],
@@ -103,3 +110,4 @@ E: Bad matrix inversion in mldivide3
 
 This error should not occur unless the matrix is badly formed.
 
+*/
