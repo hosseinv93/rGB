@@ -1,0 +1,49 @@
+# Two-dimensional Gay-Berne/WCA ellipses with an OVITO-readable dump
+
+units           lj
+dimension       2
+boundary        p p p
+atom_style      ellipsoid
+
+# 100 prolate particles confined to the xy plane.  The first two shape
+# values are the in-plane full diameters; the third is the z diameter.
+
+lattice         sq 0.12
+region          box block 0 10 0 10 -0.5 0.5
+create_box      1 box
+create_atoms    1 box
+
+set             type 1 mass 1.0
+set             type 1 shape 3.0 1.4 1.0
+# In a 2-D simulation, quat/random generates rotations about z only.
+set             group all quat/random 18238
+velocity        all create 0.15 87287 mom yes rot yes dist gaussian
+
+pair_style      gayberne/wca 1.0 3.0 1.0 4.0
+pair_coeff      1 1 1.0 1.0 1.0 0.7 0.4 1.0 0.7 0.4
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+thermo_style    custom step temp pe etotal press
+thermo          100
+timestep        0.001
+
+fix             integrate all nve/asphere
+fix             thermostat all langevin 0.15 0.15 1.0 498237 angmom 3.333
+# Required to remove out-of-plane force, torque, velocity, and angular momentum.
+fix             planar all enforce2d
+
+compute         orient all property/atom quatw quati quatj quatk shapex shapey shapez
+dump            trajectory all custom 20 dump.gayberne_wca_2d.lammpstrj &
+                id type x y z ix iy iz c_orient[*]
+dump_modify     trajectory sort id &
+                colname c_orient[1] quatw &
+                colname c_orient[2] quati &
+                colname c_orient[3] quatj &
+                colname c_orient[4] quatk &
+                colname c_orient[5] shapex &
+                colname c_orient[6] shapey &
+                colname c_orient[7] shapez
+
+run             1000
