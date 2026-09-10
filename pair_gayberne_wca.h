@@ -36,14 +36,15 @@ class PairGayBerneWCA : public Pair {
   void read_restart_settings(FILE *);
   void write_data(FILE *);
   void write_data_all(FILE *);
+  double memory_usage() override;
 
  protected:
   enum{SPHERE_SPHERE,SPHERE_ELLIPSE,ELLIPSE_SPHERE,ELLIPSE_ELLIPSE};
 
   struct OrientationMatrices {
-    double a[3][3];
     double b[3][3];
     double g[3][3];
+    bool planar;
   };
 
   double cut_global;
@@ -58,22 +59,17 @@ class PairGayBerneWCA : public Pair {
 
   int **form;
   double **lj1,**lj2,**lj3,**lj4;
+  double **chi_iso;
   int *setwell;
   class AtomVecEllipsoid *avec;
   OrientationMatrices *orientation;
   int orientation_nmax;
 
   void allocate();
-  double gayberne_analytic(const int i, const int j, double a1[3][3],
-                           double a2[3][3], double b1[3][3], double b2[3][3],
-                           double g1[3][3], double g2[3][3], double *r12,
-                           const double rsq, double *fforce, double *ttor,
-                           double *rtor);
-  double gayberne_lj(const int i, const int j, double a1[3][3],
-                     double b1[3][3],double g1[3][3],double *r12,
-                     const double rsq, double *fforce, double *ttor);
-  void compute_eta_torque(double m[3][3], double m2[3][3],
-                          double *s, double ans[3][3]);
+  template<bool PLANAR>
+  double gayberne_fast(int, int, const OrientationMatrices &,
+                      const OrientationMatrices &, const double *, double,
+                      double *, double *, double *);
 };
 
 }
