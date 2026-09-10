@@ -168,12 +168,12 @@ The relevant dump commands are:
 
 ```lammps
 compute orient all property/atom quatw quati quatj quatk shapex shapey shapez
-dump trajectory all custom 20 dump.gayberne_wca.lammpstrj \
+dump trajectory all custom 20 dump.gayberne_wca.lammpstrj &
      id type x y z ix iy iz c_orient[*]
-dump_modify trajectory sort id \
-     colname c_orient[1] quatw  colname c_orient[2] quati \
-     colname c_orient[3] quatj  colname c_orient[4] quatk \
-     colname c_orient[5] shapex colname c_orient[6] shapey \
+dump_modify trajectory sort id &
+     colname c_orient[1] quatw  colname c_orient[2] quati &
+     colname c_orient[3] quatj  colname c_orient[4] quatk &
+     colname c_orient[5] shapex colname c_orient[6] shapey &
      colname c_orient[7] shapez
 ```
 
@@ -212,6 +212,47 @@ restricted to center vectors and rotations in the `xy` plane. Consequently,
 the third shape value must remain positive and can affect the `eta` energy
 factor even though particles do not move out of plane. A common planar
 prolate choice is therefore `shape 3.0 1.4 1.0`, as used in the example.
+
+## CPU optimization and validation (10 September 2026)
+
+The optimized kernel uses symmetric matrix algebra, compact analytic torques,
+conservative geometric rejection, cached isotropic well factors, and an exact
+planar specialization. The planar path is selected only when both quaternions
+describe rotations about z and the separation lies in xy; otherwise the general
+3-D calculation is used. The third shape axis and its determinant contribution
+are retained. No approximate math, timestep change, or extra physical cutoff
+is introduced.
+
+A local benchmark based on `abp_spheroid_polymers_gradient` used 1,000 beads,
+AR=4, five-bead chains, target packing fraction 0.3, the original Brownian
+integrator, bonds, propulsion, and timestep 2e-6. Both executables read the same
+restart after a short compression/relaxation. Median times from three successive
+20,000-step intervals, after 1,000 warmup steps, on one MPI rank were:
+
+| Timing | Before this optimization | Optimized | Speedup |
+| --- | ---: | ---: | ---: |
+| Pair calculation | 5.8264 s | 1.5222 s | 3.83x |
+| Full integration loop | 7.82414 s | 3.53722 s | 2.21x |
+
+These are short local timing tests, not production-equilibrated runs or cluster
+performance guarantees. Periodic production dumps were not timed. Fixes account
+for about 48% of the optimized runtime; accelerating the pair style alone cannot
+remove that cost. This style has no threaded or GPU implementation.
+
+Validation includes 120 independent finite-difference energy/force/torque cases
+in 2-D and 3-D, with isotropic and anisotropic wells, mixed spheres/ellipsoids,
+and Newton on/off, on both one and two MPI ranks. The maximum scaled gradient
+error was 8.9e-9. A 1,000-bead shared-restart snapshot matched the previous
+forces/torques within 1.7e-13 using the error measure abs(new-old)/(1+abs(old));
+energy and pressure components agreed at printed precision. Both short moving
+runs retained all atoms and exact planar coordinates/orientations.
+
+Reproducible checks and benchmark drivers are in `src/ASPHERE/tests/gayberne_wca`.
+Rebuild the executable actually used by the job: the supplied `submit.sh`
+defaults to `/home/hova376g/softs/lammps/lammps-10Dec2025/build4/lmp_mpi`.
+Updating the local source/build does not update that separate cluster executable.
+Copy both `pair_gayberne_wca.cpp` and `pair_gayberne_wca.h` to that installation
+and rebuild it. Existing input syntax is unchanged.
 
 ## Notes
 
