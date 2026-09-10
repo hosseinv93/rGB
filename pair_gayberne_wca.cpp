@@ -75,6 +75,7 @@ PairGayBerneWCA::~PairGayBerneWCA()
     memory->destroy(lj2);
     memory->destroy(lj3);
     memory->destroy(lj4);
+    memory->destroy(chi_iso);
     delete [] lshape;
     delete [] setwell;
   }
@@ -88,7 +89,7 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
   int i,j,ii,jj,inum,jnum,itype,jtype;
   double evdwl,one_eng,rsq,r2inv,r6inv,forcelj,factor_lj;
   double fforce[3],ttor[3],rtor[3],r12[3];
-  double temp[3][3];
+  double a[3][3],temp[3][3];
   int *ilist,*jlist,*numneigh,**firstneigh;
 
   evdwl = 0.0;
@@ -120,13 +121,42 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
   const int nall = nlocal + atom->nghost;
   for (i = 0; i < nall; i++) {
     const int ktype = type[i];
-    if (form[ktype][ktype] != ELLIPSE_ELLIPSE) continue;
+    if (form[ktype][ktype] != ELLIPSE_ELLIPSE) {
+      for (int k = 0; k < 3; k++)
+        for (int l = 0; l < 3; l++) {
+          orientation[i].g[k][l] = k == l ? shape2[ktype][0] : 0.0;
+          orientation[i].b[k][l] = k == l ? well[ktype][0] : 0.0;
+        }
+      orientation[i].planar = true;
+      continue;
+    }
     double *quat = bonus[ellipsoid[i]].quat;
-    MathExtra::quat_to_mat_trans(quat,orientation[i].a);
-    MathExtra::diag_times3(well[ktype],orientation[i].a,temp);
-    MathExtra::transpose_times3(orientation[i].a,temp,orientation[i].b);
-    MathExtra::diag_times3(shape2[ktype],orientation[i].a,temp);
-    MathExtra::transpose_times3(orientation[i].a,temp,orientation[i].g);
+    orientation[i].planar = quat[1] == 0.0 && quat[2] == 0.0;
+    if (orientation[i].planar) {
+      // Exact planar rotation, without constructing/multiplying 3x3 matrices.
+      const double w2 = quat[0]*quat[0], z2 = quat[3]*quat[3];
+      const double c = w2-z2, s = 2.0*quat[0]*quat[3];
+      const double cc = c*c, ss = s*s, cs = c*s;
+      const double zz = (w2+z2)*(w2+z2);
+      double (*g)[3] = orientation[i].g;
+      double (*b)[3] = orientation[i].b;
+      g[0][0] = shape2[ktype][0]*cc+shape2[ktype][1]*ss;
+      g[1][1] = shape2[ktype][0]*ss+shape2[ktype][1]*cc;
+      g[0][1] = g[1][0] = (shape2[ktype][0]-shape2[ktype][1])*cs;
+      g[2][2] = shape2[ktype][2]*zz;
+      b[0][0] = well[ktype][0]*cc+well[ktype][1]*ss;
+      b[1][1] = well[ktype][0]*ss+well[ktype][1]*cc;
+      b[0][1] = b[1][0] = (well[ktype][0]-well[ktype][1])*cs;
+      b[2][2] = well[ktype][2]*zz;
+      g[0][2] = g[2][0] = g[1][2] = g[2][1] = 0.0;
+      b[0][2] = b[2][0] = b[1][2] = b[2][1] = 0.0;
+      continue;
+    }
+    MathExtra::quat_to_mat_trans(quat,a);
+    MathExtra::diag_times3(well[ktype],a,temp);
+    MathExtra::transpose_times3(a,temp,orientation[i].b);
+    MathExtra::diag_times3(shape2[ktype],a,temp);
+    MathExtra::transpose_times3(a,temp,orientation[i].g);
   }
 
   // loop over neighbors of my atoms
@@ -143,6 +173,7 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
       j = jlist[jj];
       factor_lj = special_lj[sbmask(j)];
       j &= NEIGHMASK;
+      if (factor_lj == 0.0) continue;
 
       // r12 = center to center vector
 
@@ -155,6 +186,7 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
       // compute if less than cutoff
 
       if (rsq < cutsq[itype][jtype]) {
+        if (epsilon[itype][jtype] == 0.0) continue;
 
         switch (form[itype][jtype]) {
         case SPHERE_SPHERE:
@@ -172,21 +204,30 @@ void PairGayBerneWCA::compute(int eflag, int vflag)
           rtor[0] = rtor[1] = rtor[2] = 0.0;
           break;
 
-        case SPHERE_ELLIPSE:
-          one_eng = gayberne_lj(j,i,orientation[j].a,orientation[j].b,
-                                orientation[j].g,r12,rsq,fforce,rtor);
-          ttor[0] = ttor[1] = ttor[2] = 0.0;
-          break;
-
-        case ELLIPSE_SPHERE:
-          one_eng = gayberne_lj(i,j,oi.a,oi.b,oi.g,r12,rsq,fforce,ttor);
-          rtor[0] = rtor[1] = rtor[2] = 0.0;
-          break;
-
         default:
-          one_eng = gayberne_analytic(i,j,oi.a,orientation[j].a,oi.b,
-                                      orientation[j].b,oi.g,orientation[j].g,
-                                      r12,rsq,fforce,ttor,rtor);
+          // The contact surface is the ellipsoid r^T G^-1 r = 2.
+          // Its axis-aligned bounds are sqrt(2*G_kk).  Adding a positive
+          // radial WCA offset expands each bound by at most that offset.
+          // These tests are conservative for arbitrary particle rotations.
+          {
+            const double pad = MAX(0.0,(TWO_1_6-gamma)*sigma[itype][jtype]);
+            bool outside = false;
+            for (int k = 0; k < 3; k++) {
+              const double distance = std::abs(r12[k])-pad;
+              if (distance > 0.0 && distance*distance >
+                  2.0*(oi.g[k][k]+orientation[j].g[k][k])) {
+                outside = true;
+                break;
+              }
+            }
+            if (outside) continue;
+          }
+          if (oi.planar && orientation[j].planar && r12[2] == 0.0)
+            one_eng = gayberne_fast<true>(itype,jtype,oi,orientation[j],
+                                          r12,rsq,fforce,ttor,rtor);
+          else
+            one_eng = gayberne_fast<false>(itype,jtype,oi,orientation[j],
+                                           r12,rsq,fforce,ttor,rtor);
           break;
         }
 
@@ -245,6 +286,8 @@ void PairGayBerneWCA::allocate()
   memory->create(cutsq,n+1,n+1,"pair:cutsq");
 
   memory->create(form,n+1,n+1,"pair:form");
+  // Diagonal entries may be unused in pair_style hybrid.
+  for (int i = 1; i <= n; i++) form[i][i] = SPHERE_SPHERE;
   memory->create(epsilon,n+1,n+1,"pair:epsilon");
   memory->create(sigma,n+1,n+1,"pair:sigma");
   memory->create(shape1,n+1,3,"pair:shape1");
@@ -255,6 +298,9 @@ void PairGayBerneWCA::allocate()
   memory->create(lj2,n+1,n+1,"pair:lj2");
   memory->create(lj3,n+1,n+1,"pair:lj3");
   memory->create(lj4,n+1,n+1,"pair:lj4");
+  memory->create(chi_iso,n+1,n+1,"pair:chi_iso");
+  for (int i = 1; i <= n; i++)
+    well[i][0] = well[i][1] = well[i][2] = 1.0;
   lshape = new double[n+1];
   setwell = new int[n+1];
   for (int i = 1; i <= n; i++) setwell[i] = 0;
@@ -424,6 +470,8 @@ double PairGayBerneWCA::init_one(int i, int j)
   lj2[j][i]     = lj2[i][j];
   lj3[j][i]     = lj3[i][j];
   lj4[j][i]     = lj4[i][j];
+  chi_iso[i][j] = chi_iso[j][i] = (setwell[i] == 2 && setwell[j] == 2) ?
+    std::pow(2.0/(well[i][0]+well[j][0]),mu) : -1.0;
   // Do not put pairs in the neighbor list beyond the largest possible WCA
   // range.  The user cutoff can still impose a shorter range explicitly.
 
@@ -564,432 +612,176 @@ void PairGayBerneWCA::write_data_all(FILE *fp)
 }
 
 /* ----------------------------------------------------------------------
-   compute analytic energy, force (fforce), and torque (ttor & rtor)
-   WCA-like repulsive GB: truncated at r_min and shifted by +epsilon(orientation)
+   Symmetric positive definite matrix operations.  LDL^T avoids the general
+   pivoting solver and supplies the inverse and determinant together.
 ------------------------------------------------------------------------- */
 
-double PairGayBerneWCA::gayberne_analytic(const int i,const int j,double a1[3][3],
-                                       double a2[3][3], double b1[3][3],
-                                       double b2[3][3], double g1[3][3],
-                                       double g2[3][3], double *r12,
-                                       const double rsq, double *fforce,
-                                       double *ttor, double *rtor)
+namespace {
+struct Symmetric3 {
+  double xx, yy, zz, xy, xz, yz;
+
+  static Symmetric3 sum(const double a[3][3], const double b[3][3])
+  {
+    return {a[0][0]+b[0][0],a[1][1]+b[1][1],a[2][2]+b[2][2],
+            a[0][1]+b[0][1],a[0][2]+b[0][2],a[1][2]+b[1][2]};
+  }
+
+  template<bool PLANAR>
+  double invert(Symmetric3 &v) const
+  {
+    const double ix = 1.0/xx;
+    const double l10 = xy*ix;
+    const double d1 = yy-xy*l10;
+    const double iy = 1.0/d1;
+    if (PLANAR) {
+      v = {ix+l10*l10*iy,iy,1.0/zz,-l10*iy,0.0,0.0};
+      return xx*d1*zz;
+    }
+    const double l20 = xz*ix;
+    const double l21 = (yz-xz*l10)*iy;
+    const double d2 = zz-xz*l20-d1*l21*l21;
+    const double iz = 1.0/d2;
+    const double t = l10*l21-l20;
+    v = {ix+l10*l10*iy+t*t*iz,iy+l21*l21*iz,iz,
+         -l10*iy-t*l21*iz,t*iz,-l21*iz};
+    return xx*d1*d2;
+  }
+
+  template<bool PLANAR>
+  void multiply(const double *x, double *y) const
+  {
+    y[0] = xx*x[0]+xy*x[1];
+    y[1] = xy*x[0]+yy*x[1];
+    y[2] = 0.0;
+    if (!PLANAR) {
+      y[0] += xz*x[2];
+      y[1] += yz*x[2];
+      y[2] = xz*x[0]+yz*x[1]+zz*x[2];
+    }
+  }
+};
+
+// Exact reductions for the common exponents, no approximate math/fast-math.
+inline double gb_power(double x, double exponent)
 {
-  double tempv[3], tempv2[3];
-  double temp[3][3];
-  double temp1,temp2,temp3;
+  if (exponent == 0.0) return 1.0;
+  if (exponent == 1.0) return x;
+  if (exponent == 2.0) return x*x;
+  if (exponent == 0.5) return std::sqrt(x);
+  if (exponent == 1.5) return x*std::sqrt(x);
+  return std::pow(x,exponent);
+}
+}
 
-  int *type = atom->type;
-  int newton_pair = force->newton_pair;
-  int nlocal = atom->nlocal;
+/* ----------------------------------------------------------------------
+   Same GB/WCA energy and derivatives as the original analytic kernel.
+   PLANAR uses the exact xy block when both orientations and r lie in xy.
+   It retains the zz determinant factor (this is not a different 2-D model).
+------------------------------------------------------------------------- */
 
-  const int itype = type[i];
-  const int jtype = type[j];
-
+template<bool PLANAR>
+double PairGayBerneWCA::gayberne_fast(int itype, int jtype,
+                                    const OrientationMatrices &oi,
+                                    const OrientationMatrices &oj,
+                                    const double *r12, double rsq,
+                                    double *fforce, double *ttor, double *rtor)
+{
   const double r = std::sqrt(rsq);
   const double rinv = 1.0/r;
-  double r12hat[3] = {r12[0]*rinv,r12[1]*rinv,r12[2]*rinv};
+  const double n[3] = {r12[0]*rinv,r12[1]*rinv,r12[2]*rinv};
+  const Symmetric3 g = Symmetric3::sum(oi.g,oj.g);
+  Symmetric3 invg;
+  const double detg = g.invert<PLANAR>(invg);
+  if (!(detg > 0.0))
+    error->one(FLERR,"Bad shape matrix in pair gayberne/wca");
 
-  // compute distance of closest approach
-
-  double g12[3][3];
-  MathExtra::plus3(g1,g2,g12);
-  double kappa[3];
-  int ierror = MathExtra::mldivide3(g12,r12,kappa);
-  if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
-
-  // tempv = G12^-1*r12hat
-
-  tempv[0] = kappa[0]/r;
-  tempv[1] = kappa[1]/r;
-  tempv[2] = kappa[2]/r;
-  double sigma12 = MathExtra::dot3(r12hat,tempv);
-  sigma12 = 1.0/std::sqrt(0.5*sigma12);
-  double h12 = r-sigma12;
-
+  double k[3];
+  invg.multiply<PLANAR>(n,k);
+  const double nk = MathExtra::dot3(n,k);
+  const double contact = std::sqrt(2.0/nk);
   const double sigma0 = sigma[itype][jtype];
-  const double eps0   = epsilon[itype][jtype];
-
-  // WCA-like radial part: only active for r < r_min
-  double varrho = 0.0, varrho6 = 0.0, varrho12 = 0.0;
-  double u_r = 0.0;
-  const double rmin = sigma12 + (TWO_1_6-gamma)*sigma0;
-
-  if (r >= rmin) {
+  if (r >= contact+(TWO_1_6-gamma)*sigma0) {
     fforce[0] = fforce[1] = fforce[2] = 0.0;
     ttor[0] = ttor[1] = ttor[2] = 0.0;
     rtor[0] = rtor[1] = rtor[2] = 0.0;
     return 0.0;
   }
 
-  double denom = h12 + gamma*sigma0;
-  varrho = sigma0 / denom;
-  double varrho2 = varrho*varrho;
-  double varrho4 = varrho2*varrho2;
-  varrho6 = varrho4*varrho2;
-  varrho12 = varrho6*varrho6;
-  // phi_gb + epsilon_ij, orientation scaling applied later
-  u_r = 4.0*eps0*(varrho12-varrho6) + eps0;
-
-  // compute eta_12
-
-  double eta = 2.0*lshape[itype]*lshape[jtype];
-  double det_g12 = MathExtra::det3(g12);
-  eta = std::pow(eta/det_g12,upsilon);
-
-  // compute chi_12
-
-  double b12[3][3];
-  double iota[3];
-  MathExtra::plus3(b1,b2,b12);
-  ierror = MathExtra::mldivide3(b12,r12,iota);
-  if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
-
-  tempv[0] = iota[0]/r;
-  tempv[1] = iota[1]/r;
-  tempv[2] = iota[2]/r;
-  const double chi_base = 2.0*MathExtra::dot3(r12hat,tempv);
-  const double chi = std::pow(chi_base,mu);
-
-  // force
-  // compute dUr/dr
-
-  temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
-  temp1 *= 24.0*eps0;
-  double sigma12_3 = sigma12*sigma12*sigma12;
-  double u_slj = temp1*sigma12_3*0.5;
-
-  double dUr[3];
-  temp2 = MathExtra::dot3(kappa,r12hat);
-  double uslj_rsq = (rsq > 0.0) ? u_slj/rsq : 0.0;
-  dUr[0] = temp1*r12hat[0]+uslj_rsq*(kappa[0]-temp2*r12hat[0]);
-  dUr[1] = temp1*r12hat[1]+uslj_rsq*(kappa[1]-temp2*r12hat[1]);
-  dUr[2] = temp1*r12hat[2]+uslj_rsq*(kappa[2]-temp2*r12hat[2]);
-
-  // compute dChi_12/dr
-
-  double dchi[3];
-  temp1 = MathExtra::dot3(iota,r12hat);
-  temp2 = -4.0/rsq*mu*chi/chi_base;
-  dchi[0] = temp2*(iota[0]-temp1*r12hat[0]);
-  dchi[1] = temp2*(iota[1]-temp1*r12hat[1]);
-  dchi[2] = temp2*(iota[2]-temp1*r12hat[2]);
-
-  temp1 = -eta*u_r;
-  temp3 = eta*chi;
-  fforce[0] = temp1*dchi[0]-temp3*dUr[0];
-  fforce[1] = temp1*dchi[1]-temp3*dUr[1];
-  fforce[2] = temp1*dchi[2]-temp3*dUr[2];
-
-  // torque for particle 1 and 2
-  // compute dUr
-
-  tempv[0] = -uslj_rsq*kappa[0];
-  tempv[1] = -uslj_rsq*kappa[1];
-  tempv[2] = -uslj_rsq*kappa[2];
-  MathExtra::vecmat(kappa,g1,tempv2);
-  MathExtra::cross3(tempv,tempv2,dUr);
-  double dUr2[3];
-
-  if (newton_pair || j < nlocal) {
-    MathExtra::vecmat(kappa,g2,tempv2);
-    MathExtra::cross3(tempv,tempv2,dUr2);
+  const double rho = sigma0/(r-contact+gamma*sigma0);
+  const double rho2 = rho*rho;
+  const double rho6 = rho2*rho2*rho2;
+  const double eps = epsilon[itype][jtype];
+  // Algebraically 4*eps*(rho^12-rho^6)+eps, stable near the minimum.
+  const double ur = 4.0*eps*(rho6-0.5)*(rho6-0.5);
+  const double derivative = 24.0*eps*rho*rho6*(2.0*rho6-1.0)/sigma0;
+  const double eta = gb_power(2.0*lshape[itype]*lshape[jtype]/detg,upsilon);
+  double chi = chi_iso[itype][jtype];
+  double v[3] = {0.0,0.0,0.0};
+  double nv = 0.0, chi_derivative = 0.0;
+  if (chi < 0.0) {
+    const Symmetric3 b = Symmetric3::sum(oi.b,oj.b);
+    Symmetric3 invb;
+    if (!(b.invert<PLANAR>(invb) > 0.0))
+      error->one(FLERR,"Bad well matrix in pair gayberne/wca");
+    invb.multiply<PLANAR>(n,v);
+    nv = MathExtra::dot3(n,v);
+    chi = gb_power(2.0*nv,mu);
+    chi_derivative = 2.0*mu/nv;
   }
+  const double energy = eta*chi*ur;
+  const double radial = eta*chi*derivative;
+  const double shape_derivative = radial*contact*contact*contact*0.5;
+  const double angular = energy*chi_derivative;
+  constexpr int ndim = PLANAR ? 2 : 3;
+  for (int m = 0; m < ndim; m++)
+    fforce[m] = -radial*n[m]-shape_derivative*rinv*(k[m]-nk*n[m])+
+      angular*rinv*(v[m]-nv*n[m]);
 
-  // compute d_chi
-
-  MathExtra::vecmat(iota,b1,tempv);
-  MathExtra::cross3(tempv,iota,dchi);
-  dchi[0] *= temp2;
-  dchi[1] *= temp2;
-  dchi[2] *= temp2;
-  double dchi2[3];
-
-  if (newton_pair || j < nlocal) {
-    MathExtra::vecmat(iota,b2,tempv);
-    MathExtra::cross3(tempv,iota,dchi2);
-    dchi2[0] *= temp2;
-    dchi2[1] *= temp2;
-    dchi2[2] *= temp2;
+  // d(log det G)/d(theta_i) = 2*axial(G_i G^-1).
+  // This replaces the repeated symbolic 3x3 eta-torque derivatives.
+  const double eta_derivative = 2.0*energy*upsilon;
+  if (PLANAR) {
+    const double kgx = oi.g[0][0]*k[0]+oi.g[0][1]*k[1];
+    const double kgy = oi.g[0][1]*k[0]+oi.g[1][1]*k[1];
+    const double vb_x = oi.b[0][0]*v[0]+oi.b[0][1]*v[1];
+    const double vb_y = oi.b[0][1]*v[0]+oi.b[1][1]*v[1];
+    const double axial = (oi.g[0][0]-oi.g[1][1])*invg.xy+
+      oi.g[0][1]*(invg.yy-invg.xx);
+    ttor[2] = shape_derivative*(k[0]*kgy-k[1]*kgx)+
+      angular*(vb_x*v[1]-vb_y*v[0])+eta_derivative*axial;
+    fforce[2] = ttor[0] = ttor[1] = rtor[0] = rtor[1] = 0.0;
+    rtor[2] = r12[0]*fforce[1]-r12[1]*fforce[0]-ttor[2];
+  } else {
+    double gk[3], bv[3], cross_g[3], cross_b[3];
+    MathExtra::matvec(oi.g,k,gk);
+    MathExtra::matvec(oi.b,v,bv);
+    MathExtra::cross3(k,gk,cross_g);
+    MathExtra::cross3(bv,v,cross_b);
+    const double axial[3] = {
+      oi.g[0][1]*invg.xz-oi.g[0][2]*invg.xy+
+        (oi.g[1][1]-oi.g[2][2])*invg.yz+oi.g[1][2]*(invg.zz-invg.yy),
+      oi.g[0][2]*(invg.xx-invg.zz)+(oi.g[2][2]-oi.g[0][0])*invg.xz+
+        oi.g[1][2]*invg.xy-oi.g[0][1]*invg.yz,
+      (oi.g[0][0]-oi.g[1][1])*invg.xy+oi.g[0][1]*(invg.yy-invg.xx)+
+        oi.g[0][2]*invg.yz-oi.g[1][2]*invg.xz};
+    for (int m = 0; m < 3; m++)
+      ttor[m] = shape_derivative*cross_g[m]+angular*cross_b[m]+eta_derivative*axial[m];
+    // Rotational invariance: tau_i + tau_j = r_ij cross F_i.
+    // This also applies with Newton off; unused ghost torques are not tallied.
+    MathExtra::cross3(r12,fforce,rtor);
+    for (int m = 0; m < 3; m++) rtor[m] -= ttor[m];
   }
-
-  // compute d_eta
-
-  double deta[3];
-  deta[0] = deta[1] = deta[2] = 0.0;
-  compute_eta_torque(g12,a1,shape2[itype],temp);
-  temp1 = -eta*upsilon;
-  for (int m = 0; m < 3; m++) {
-    for (int y = 0; y < 3; y++) tempv[y] = temp1*temp[m][y];
-    MathExtra::cross3(a1[m],tempv,tempv2);
-    deta[0] += tempv2[0];
-    deta[1] += tempv2[1];
-    deta[2] += tempv2[2];
-  }
-
-  // compute d_eta for particle 2
-
-  double deta2[3];
-  if (newton_pair || j < nlocal) {
-    deta2[0] = deta2[1] = deta2[2] = 0.0;
-    compute_eta_torque(g12,a2,shape2[jtype],temp);
-    for (int m = 0; m < 3; m++) {
-      for (int y = 0; y < 3; y++) tempv[y] = temp1*temp[m][y];
-      MathExtra::cross3(a2[m],tempv,tempv2);
-      deta2[0] += tempv2[0];
-      deta2[1] += tempv2[1];
-      deta2[2] += tempv2[2];
-    }
-  }
-
-  // torque
-
-  double temp_eta     = u_r*eta;
-  double temp_u_chi   = u_r*chi;
-  double temp_chi_eta = chi*eta;
-
-  ttor[0] = (temp_eta*dchi[0]+temp_u_chi*deta[0]+temp_chi_eta*dUr[0]) * -1.0;
-  ttor[1] = (temp_eta*dchi[1]+temp_u_chi*deta[1]+temp_chi_eta*dUr[1]) * -1.0;
-  ttor[2] = (temp_eta*dchi[2]+temp_u_chi*deta[2]+temp_chi_eta*dUr[2]) * -1.0;
-
-  if (newton_pair || j < nlocal) {
-    rtor[0] = (temp_eta*dchi2[0]+temp_u_chi*deta2[0]+temp_chi_eta*dUr2[0]) * -1.0;
-    rtor[1] = (temp_eta*dchi2[1]+temp_u_chi*deta2[1]+temp_chi_eta*dUr2[1]) * -1.0;
-    rtor[2] = (temp_eta*dchi2[2]+temp_u_chi*deta2[2]+temp_chi_eta*dUr2[2]) * -1.0;
-  }
-
-  return temp_eta*chi;
-}
-
-/* ----------------------------------------------------------------------
-   compute analytic energy, force (fforce), and torque (ttor)
-   between ellipsoid and LJ-like particle (repulsive GB-WCA)
-------------------------------------------------------------------------- */
-
-double PairGayBerneWCA::gayberne_lj(const int i,const int j,double a1[3][3],
-                                 double b1[3][3],double g1[3][3],
-                                 double *r12,const double rsq,double *fforce,
-                                 double *ttor)
-{
-  double tempv[3], tempv2[3];
-  double temp[3][3];
-  double temp1,temp2;
-
-  int *type = atom->type;
-
-  const int itype = type[i];
-  const int jtype = type[j];
-
-  const double r = std::sqrt(rsq);
-  const double rinv = 1.0/r;
-  double r12hat[3] = {r12[0]*rinv,r12[1]*rinv,r12[2]*rinv};
-
-  // compute distance of closest approach
-
-  double g12[3][3];
-  g12[0][0] = g1[0][0]+shape2[jtype][0];
-  g12[1][1] = g1[1][1]+shape2[jtype][0];
-  g12[2][2] = g1[2][2]+shape2[jtype][0];
-  g12[0][1] = g1[0][1]; g12[1][0] = g1[1][0];
-  g12[0][2] = g1[0][2]; g12[2][0] = g1[2][0];
-  g12[1][2] = g1[1][2]; g12[2][1] = g1[2][1];
-  double kappa[3];
-  int ierror = MathExtra::mldivide3(g12,r12,kappa);
-  if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
-
-  tempv[0] = kappa[0]/r;
-  tempv[1] = kappa[1]/r;
-  tempv[2] = kappa[2]/r;
-  double sigma12 = MathExtra::dot3(r12hat,tempv);
-  sigma12 = 1.0/std::sqrt(0.5*sigma12);
-  double h12 = r-sigma12;
-
-  const double sigma0 = sigma[itype][jtype];
-  const double eps0   = epsilon[itype][jtype];
-
-  // WCA-like radial part
-  double varrho = 0.0, varrho6 = 0.0, varrho12 = 0.0;
-  double u_r = 0.0;
-  const double rmin = sigma12 + (TWO_1_6-gamma)*sigma0;
-
-  if (r >= rmin) {
-    fforce[0] = fforce[1] = fforce[2] = 0.0;
+  // An isotropic sphere has no torque, including floating-point residue.
+  if (form[itype][jtype] == SPHERE_ELLIPSE)
     ttor[0] = ttor[1] = ttor[2] = 0.0;
-    return 0.0;
-  }
-
-  double denom = h12 + gamma*sigma0;
-  varrho = sigma0/denom;
-  double varrho2 = varrho*varrho;
-  double varrho4 = varrho2*varrho2;
-  varrho6 = varrho4*varrho2;
-  varrho12 = varrho6*varrho6;
-  u_r = 4.0*eps0*(varrho12-varrho6)+eps0;
-
-  // compute eta_12
-
-  double eta = 2.0*lshape[itype]*lshape[jtype];
-  double det_g12 = MathExtra::det3(g12);
-  eta = std::pow(eta/det_g12,upsilon);
-
-  // compute chi_12
-
-  double b12[3][3];
-  double iota[3];
-  b12[0][0] = b1[0][0] + well[jtype][0];
-  b12[1][1] = b1[1][1] + well[jtype][0];
-  b12[2][2] = b1[2][2] + well[jtype][0];
-  b12[0][1] = b1[0][1]; b12[1][0] = b1[1][0];
-  b12[0][2] = b1[0][2]; b12[2][0] = b1[2][0];
-  b12[1][2] = b1[1][2]; b12[2][1] = b1[2][1];
-  ierror = MathExtra::mldivide3(b12,r12,iota);
-  if (ierror) error->all(FLERR,"Bad matrix inversion in mldivide3");
-
-  tempv[0] = iota[0]/r;
-  tempv[1] = iota[1]/r;
-  tempv[2] = iota[2]/r;
-  const double chi_base = 2.0*MathExtra::dot3(r12hat,tempv);
-  const double chi = std::pow(chi_base,mu);
-
-  // force
-  // compute dUr/dr
-
-  temp1 = (2.0*varrho12*varrho - varrho6*varrho)/sigma0;
-  temp1 *= 24.0*eps0;
-  double sigma12_3 = sigma12*sigma12*sigma12;
-  double u_slj = temp1*sigma12_3*0.5;
-
-  double dUr[3];
-  temp2 = MathExtra::dot3(kappa,r12hat);
-  double uslj_rsq = (rsq > 0.0) ? u_slj/rsq : 0.0;
-  dUr[0] = temp1*r12hat[0]+uslj_rsq*(kappa[0]-temp2*r12hat[0]);
-  dUr[1] = temp1*r12hat[1]+uslj_rsq*(kappa[1]-temp2*r12hat[1]);
-  dUr[2] = temp1*r12hat[2]+uslj_rsq*(kappa[2]-temp2*r12hat[2]);
-
-  // compute dChi_12/dr
-
-  double dchi[3];
-  temp1 = MathExtra::dot3(iota,r12hat);
-  const double dchi_prefactor = -4.0/rsq*mu*chi/chi_base;
-  dchi[0] = dchi_prefactor*(iota[0]-temp1*r12hat[0]);
-  dchi[1] = dchi_prefactor*(iota[1]-temp1*r12hat[1]);
-  dchi[2] = dchi_prefactor*(iota[2]-temp1*r12hat[2]);
-
-  temp1 = -eta*u_r;
-  temp2 = eta*chi;
-  fforce[0] = temp1*dchi[0]-temp2*dUr[0];
-  fforce[1] = temp1*dchi[1]-temp2*dUr[1];
-  fforce[2] = temp1*dchi[2]-temp2*dUr[2];
-
-  // torque for particle 1
-  // compute dUr
-
-  tempv[0] = -uslj_rsq*kappa[0];
-  tempv[1] = -uslj_rsq*kappa[1];
-  tempv[2] = -uslj_rsq*kappa[2];
-  MathExtra::vecmat(kappa,g1,tempv2);
-  MathExtra::cross3(tempv,tempv2,dUr);
-
-  // compute d_chi
-
-  MathExtra::vecmat(iota,b1,tempv);
-  MathExtra::cross3(tempv,iota,dchi);
-  dchi[0] *= dchi_prefactor;
-  dchi[1] *= dchi_prefactor;
-  dchi[2] *= dchi_prefactor;
-
-  // compute d_eta
-
-  double deta[3];
-  deta[0] = deta[1] = deta[2] = 0.0;
-  compute_eta_torque(g12,a1,shape2[itype],temp);
-  temp1 = -eta*upsilon;
-  for (int m = 0; m < 3; m++) {
-    for (int y = 0; y < 3; y++) tempv[y] = temp1*temp[m][y];
-    MathExtra::cross3(a1[m],tempv,tempv2);
-    deta[0] += tempv2[0];
-    deta[1] += tempv2[1];
-    deta[2] += tempv2[2];
-  }
-
-  // torque
-
-  double temp_eta     = u_r*eta;
-  double temp_u_chi   = u_r*chi;
-  double temp_chi_eta = chi*eta;
-
-  ttor[0] = (temp_eta*dchi[0]+temp_u_chi*deta[0]+temp_chi_eta*dUr[0]) * -1.0;
-  ttor[1] = (temp_eta*dchi[1]+temp_u_chi*deta[1]+temp_chi_eta*dUr[1]) * -1.0;
-  ttor[2] = (temp_eta*dchi[2]+temp_u_chi*deta[2]+temp_chi_eta*dUr[2]) * -1.0;
-
-  return temp_eta*chi;
+  if (form[itype][jtype] == ELLIPSE_SPHERE)
+    rtor[0] = rtor[1] = rtor[2] = 0.0;
+  return energy;
 }
 
-/* ----------------------------------------------------------------------
-   torque contribution from eta
-   computes trace in the last doc equation for the torque derivative
-   code comes from symbolic solver dump
-   m is g12, m2 is a_i, s is the shape for the particle
-------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
 
-void PairGayBerneWCA::compute_eta_torque(double m[3][3], double m2[3][3],
-                                      double *s, double ans[3][3])
+double PairGayBerneWCA::memory_usage()
 {
-  double den = m[1][0]*m[0][2]*m[2][1]-m[0][0]*m[1][2]*m[2][1]-
-    m[0][2]*m[2][0]*m[1][1]+m[0][1]*m[2][0]*m[1][2]-
-    m[1][0]*m[0][1]*m[2][2]+m[0][0]*m[1][1]*m[2][2];
-
-  ans[0][0] = s[0]*(m[1][2]*m[0][1]*m2[0][2]+2.0*m[1][1]*m[2][2]*m2[0][0]-
-                    m[1][1]*m2[0][2]*m[0][2]-2.0*m[1][2]*m2[0][0]*m[2][1]+
-                    m2[0][1]*m[0][2]*m[2][1]-m2[0][1]*m[0][1]*m[2][2]-
-                    m[1][0]*m[2][2]*m2[0][1]+m[2][0]*m[1][2]*m2[0][1]+
-                    m[1][0]*m2[0][2]*m[2][1]-m2[0][2]*m[2][0]*m[1][1])/den;
-
-  ans[0][1] = s[0]*(m[0][2]*m2[0][0]*m[2][1]-m[2][2]*m2[0][0]*m[0][1]+
-                    2.0*m[0][0]*m[2][2]*m2[0][1]-m[0][0]*m2[0][2]*m[1][2]-
-                    2.0*m[2][0]*m[0][2]*m2[0][1]+m2[0][2]*m[1][0]*m[0][2]-
-                    m[2][2]*m[1][0]*m2[0][0]+m[2][0]*m2[0][0]*m[1][2]+
-                    m[2][0]*m2[0][2]*m[0][1]-m2[0][2]*m[0][0]*m[2][1])/den;
-
-  ans[0][2] = s[0]*(m[0][1]*m[1][2]*m2[0][0]-m[0][2]*m2[0][0]*m[1][1]-
-                    m[0][0]*m[1][2]*m2[0][1]+m[1][0]*m[0][2]*m2[0][1]-
-                    m2[0][1]*m[0][0]*m[2][1]-m[2][0]*m[1][1]*m2[0][0]+
-                    2.0*m[1][1]*m[0][0]*m2[0][2]-2.0*m[1][0]*m2[0][2]*m[0][1]+
-                    m[1][0]*m[2][1]*m2[0][0]+m[2][0]*m2[0][1]*m[0][1])/den;
-
-  ans[1][0] = s[1]*(-m[1][1]*m2[1][2]*m[0][2]+2.0*m[1][1]*m[2][2]*m2[1][0]+
-                    m[1][2]*m[0][1]*m2[1][2]-2.0*m[1][2]*m2[1][0]*m[2][1]+
-                    m2[1][1]*m[0][2]*m[2][1]-m2[1][1]*m[0][1]*m[2][2]-
-                    m[1][0]*m[2][2]*m2[1][1]+m[2][0]*m[1][2]*m2[1][1]-
-                    m2[1][2]*m[2][0]*m[1][1]+m[1][0]*m2[1][2]*m[2][1])/den;
-
-  ans[1][1] = s[1]*(m[0][2]*m2[1][0]*m[2][1]-m[0][1]*m[2][2]*m2[1][0]+
-                    2.0*m[2][2]*m[0][0]*m2[1][1]-m2[1][2]*m[0][0]*m[1][2]-
-                    2.0*m[2][0]*m2[1][1]*m[0][2]-m[1][0]*m[2][2]*m2[1][0]+
-                    m[2][0]*m[1][2]*m2[1][0]+m[1][0]*m2[1][2]*m[0][2]-
-                    m[0][0]*m2[1][2]*m[2][1]+m2[1][2]*m[0][1]*m[2][0])/den;
-
-  ans[1][2] = s[1]*(m[0][1]*m[1][2]*m2[1][0]-m[0][2]*m2[1][0]*m[1][1]-
-                    m[0][0]*m[1][2]*m2[1][1]+m[1][0]*m[0][2]*m2[1][1]+
-                    2.0*m[1][1]*m[0][0]*m2[1][2]-m[0][0]*m2[1][1]*m[2][1]+
-                    m[0][1]*m[2][0]*m2[1][1]-m2[1][0]*m[2][0]*m[1][1]-
-                    2.0*m[1][0]*m[0][1]*m2[1][2]+m[1][0]*m2[1][0]*m[2][1])/den;
-
-  ans[2][0] = s[2]*(-m[1][1]*m[0][2]*m2[2][2]+m[0][1]*m[1][2]*m2[2][2]+
-                    2.0*m[1][1]*m2[2][0]*m[2][2]-m[0][1]*m2[2][1]*m[2][2]+
-                    m[0][2]*m[2][1]*m2[2][1]-2.0*m2[2][0]*m[2][1]*m[1][2]-
-                    m[1][0]*m2[2][1]*m[2][2]+m[1][2]*m[2][0]*m2[2][1]-
-                    m[1][1]*m[2][0]*m2[2][2]+m[2][1]*m[1][0]*m2[2][2])/den;
-
-  ans[2][1] = s[2]*-(m[0][1]*m[2][2]*m2[2][0]-m[0][2]*m2[2][0]*m[2][1]-
-                     2.0*m2[2][1]*m[0][0]*m[2][2]+m[1][2]*m2[2][2]*m[0][0]+
-                     2.0*m2[2][1]*m[0][2]*m[2][0]+m[1][0]*m2[2][0]*m[2][2]-
-                     m[1][0]*m[0][2]*m2[2][2]-m[1][2]*m[2][0]*m2[2][0]+
-                     m[0][0]*m2[2][2]*m[2][1]-m2[2][2]*m[0][1]*m[2][0])/den;
-
-  ans[2][2] = s[2]*(m[0][1]*m[1][2]*m2[2][0]-m[0][2]*m2[2][0]*m[1][1]-
-                    m[0][0]*m[1][2]*m2[2][1]+m[1][0]*m[0][2]*m2[2][1]-
-                    m[1][1]*m[2][0]*m2[2][0]-m[2][1]*m2[2][1]*m[0][0]+
-                    2.0*m[1][1]*m2[2][2]*m[0][0]+m[2][1]*m[1][0]*m2[2][0]+
-                    m[2][0]*m[0][1]*m2[2][1]-2.0*m2[2][2]*m[1][0]*m[0][1])/den;
+  return (double) orientation_nmax*sizeof(OrientationMatrices);
 }
